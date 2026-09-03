@@ -2,6 +2,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const crypto = require("crypto");
 const rateLimit = require("express-rate-limit");
+const { GridFSBucket, ObjectId } = require("mongodb");
 
 const app = express();
 
@@ -9,10 +10,12 @@ const app = express();
    CONFIG
 ========================================================= */
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT || 3000);
 const MONGO_URI = process.env.MONGO_URI;
 
-const ADMIN_PASS = process.env.ADMIN_PASS || "CHANGE_THIS_PASSWORD";
+// Render-এ ADMIN_PASS না দিলেও server crash করবে না.
+// Production-এ অবশ্যই নিজের password দিয়ে ADMIN_PASS সেট করবে।
+const ADMIN_PASS = process.env.ADMIN_PASS || "py.py.php";
 
 const USER_DAILY_LIMIT = 5;
 const GLOBAL_DAILY_LIMIT = 250;
@@ -21,7 +24,7 @@ const USER_MAX_BYTES = 1 * 1024 * 1024;       // 1MB
 const ADMIN_MAX_BYTES = 50 * 1024 * 1024;     // 50MB
 
 if (!MONGO_URI) {
-  console.error("MONGO_URI is missing.");
+  console.error("❌ MONGO_URI is missing.");
   process.exit(1);
 }
 
@@ -29,30 +32,23 @@ if (!MONGO_URI) {
    EXPRESS
 ========================================================= */
 
-app.set("trust proxy", 1);
-
-app.use(express.json({
-  limit: "50mb",
-  strict: true
-}));
-
-app.use(express.urlencoded({
-  extended: true,
-  limit: "50mb"
-}));
-
-/* =========================================================
-   SECURITY / BASIC RATE LIMIT
-========================================================= */
-
 app.disable("x-powered-by");
+
+app.set("trust proxy", 1);
 
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader(
+    "Referrer-Policy",
+    "strict-origin-when-cross-origin"
+  );
   res.setHeader("X-Frame-Options", "SAMEORIGIN");
   next();
 });
+
+/* =========================================================
+   RATE LIMIT
+========================================================= */
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -67,20 +63,7 @@ const apiLimiter = rateLimit({
 app.use("/api/", apiLimiter);
 
 /* =========================================================
-   MONGODB
-========================================================= */
-
-mongoose.connect(MONGO_URI)
-  .then(() => {
-    console.log("MongoDB Connected");
-  })
-  .catch(err => {
-    console.error("MongoDB Error:", err);
-    process.exit(1);
-  });
-
-/* =========================================================
-   SCHEMAS
+   DATABASE SCHEMAS
 ========================================================= */
 
 const pageSchema = new mongoose.Schema({
@@ -93,8 +76,13 @@ const pageSchema = new mongoose.Schema({
     maxlength: 80
   },
 
-  htmlContent: {
-    type: String,
+  fileId: {
+    type: mongoose.Schema.Types.ObjectId,
+    required: true
+  },
+
+  sizeBytes: {
+    type: Number,
     required: true
   },
 
@@ -107,77 +95,69 @@ const pageSchema = new mongoose.Schema({
   ownerType: {
     type: String,
     enum: ["user", "admin"],
-    default: "user",
-    index: true
-  },
-
-  sizeBytes: {
-    type: Number,
-    default: 0
+    required: true
   },
 
   createdAt: {
     type: Date,
-    default: Date.now,
-    index: true
+    default: Date.now
+  },
+
+  updatedAt: {
+    type: Date,
+    default: Date.now
   }
 });
-
-const Page = mongoose.model("Page", pageSchema);
-
 
 const taskSchema = new mongoose.Schema({
   title: {
     type: String,
     required: true,
-    maxlength: 150
+    trim: true,
+    maxlength: 120
   },
 
   description: {
     type: String,
-    required: true,
-    maxlength: 1000
+    default: "",
+    maxlength: 500
   },
 
   link: {
     type: String,
-    required: true,
-    maxlength: 2000
+    default: "",
+    maxlength: 1000
   },
 
   badge: {
     type: String,
-    default: "VERIFIED",
+    default: "",
     maxlength: 40
   },
 
   createdAt: {
     type: Date,
-    default: Date.now,
-    index: true
+    default: Date.now
   }
 });
 
-const Task = mongoose.model("Task", taskSchema);
+const usageSchema = new mongoose.Schema({
+  key: {
+    type: String,
+    required: true,
+    unique: true
+  },
 
-
-/*
-  DailyUsage
-
-  ownerKey:
-    hashed IP for users
-    "GLOBAL" for global counter
-*/
-
-const dailyUsageSchema = new mongoose.Schema({
   date: {
     type: String,
-    required: true
+    required: true,
+    index: true
   },
 
   ownerKey: {
     type: String,
-    required: true
+    required: true,
+    index: true
   },
 
   count: {
@@ -191,31 +171,3712 @@ const dailyUsageSchema = new mongoose.Schema({
   }
 });
 
-dailyUsageSchema.index(
-  { date: 1, ownerKey: 1 },
-  { unique: true }
-);
-
-const DailyUsage = mongoose.model(
-  "DailyUsage",
-  dailyUsageSchema
-);
-
-
-const bannedSchema = new mongoose.Schema({
-  key: {
+const banSchema = new mongoose.Schema({
+  ownerKey: {
     type: String,
     required: true,
-    unique: true,
-    index: true
+    unique: true
   },
 
   reason: {
     type: String,
-    default: "No reason"
+    default: ""
   },
 
   createdAt: {
+    type: Date,
+    default: Date.now
+  }
+});
+
+const Page = mongoose.model("Page", pageSchema);
+const Task = mongoose.model("Task", taskSchema);
+const DailyUsage = mongoose.model("DailyUsage", usageSchema);
+const BannedUser = mongoose.model("BannedUser", banSchema);
+
+let bucket = null;
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function getDateKey() {
+  const d = new Date();
+
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+
+  return `${y}-${m}-${day}`;
+}
+
+function getClientIP(req) {
+  return String(
+    req.ip ||
+    req.headers["x-forwarded-for"] ||
+    req.socket.remoteAddress ||
+    "unknown"
+  )
+    .split(",")[0]
+    .trim();
+}
+
+function getUserKey(req) {
+  return crypto
+    .createHash("sha256")
+    .update(`sjemar:${getClientIP(req)}`)
+    .digest("hex");
+}
+
+function cleanSlug(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/[^a-z0-9_-]/g, "")
+    .slice(0, 80);
+}
+
+function isAdmin(req) {
+  return req.get("x-admin-pass") === ADMIN_PASS;
+}
+
+async function isBanned(req) {
+  const key = getUserKey(req);
+
+  return Boolean(
+    await BannedUser.exists({
+      ownerKey: key
+    })
+  );
+}
+
+function requireAdmin(req, res, next) {
+  if (!isAdmin(req)) {
+    return res.status(401).json({
+      error: "Admin password ভুল।"
+    });
+  }
+
+  next();
+}
+
+/* =========================================================
+   DAILY COUNTER
+========================================================= */
+
+async function increaseUsage(
+  key,
+  ownerKey,
+  limit
+) {
+  const date = getDateKey();
+
+  try {
+    const result = await DailyUsage.findOneAndUpdate(
+      {
+        key,
+        count: {
+          $lt: limit
+        }
+      },
+      {
+        $inc: {
+          count: 1
+        },
+
+        $set: {
+          updatedAt: new Date(),
+          date,
+          ownerKey
+        },
+
+        $setOnInsert: {
+          key
+        }
+      },
+      {
+        new: true,
+        upsert: true
+      }
+    ).lean();
+
+    return Boolean(result);
+
+  } catch (error) {
+
+    // Concurrent request হলে duplicate key হতে পারে
+    if (error && error.code === 11000) {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+async function decreaseUsage(
+  key
+) {
+  try {
+    await DailyUsage.findOneAndUpdate(
+      {
+        key,
+        count: {
+          $gt: 0
+        }
+      },
+      {
+        $inc: {
+          count: -1
+        },
+
+        $set: {
+          updatedAt: new Date()
+        }
+      }
+    );
+  } catch (error) {
+    console.error("Usage rollback error:", error);
+  }
+}
+
+/* =========================================================
+   QUOTA
+========================================================= */
+
+async function consumeQuota(req) {
+
+  const owner = getUserKey(req);
+  const date = getDateKey();
+
+  const userKey = `${date}:user:${owner}`;
+  const globalKey = `${date}:global`;
+
+  const userAllowed = await increaseUsage(
+    userKey,
+    owner,
+    USER_DAILY_LIMIT
+  );
+
+  if (!userAllowed) {
+    return {
+      ok: false,
+      reason: "user"
+    };
+  }
+
+  const globalAllowed = await increaseUsage(
+    globalKey,
+    "GLOBAL",
+    GLOBAL_DAILY_LIMIT
+  );
+
+  if (!globalAllowed) {
+
+    await decreaseUsage(userKey);
+
+    return {
+      ok: false,
+      reason: "global"
+    };
+  }
+
+  return {
+    ok: true
+  };
+}
+
+async function rollbackQuota(req) {
+
+  const owner = getUserKey(req);
+  const date = getDateKey();
+
+  await decreaseUsage(
+    `${date}:user:${owner}`
+  );
+
+  await decreaseUsage(
+    `${date}:global`
+  );
+}
+
+/* =========================================================
+   GRIDFS SAVE HTML
+========================================================= */
+
+async function uploadHTML(
+  slug,
+  html,
+  ownerKey,
+  ownerType
+) {
+
+  if (!bucket) {
+    throw new Error("Storage is not ready.");
+  }
+
+  const buffer = Buffer.from(
+    html,
+    "utf8"
+  );
+
+  const fileId = new ObjectId();
+
+  await new Promise((resolve, reject) => {
+
+    const uploadStream =
+      bucket.openUploadStreamWithId(
+        fileId,
+        `page-${slug}.html`,
+        {
+          contentType:
+            "text/html; charset=utf-8",
+
+          metadata: {
+            slug,
+            ownerKey,
+            ownerType
+          }
+        }
+      );
+
+    uploadStream.on(
+      "error",
+      reject
+    );
+
+    uploadStream.on(
+      "finish",
+      resolve
+    );
+
+    uploadStream.end(buffer);
+  });
+
+  return {
+    fileId,
+    sizeBytes: buffer.byteLength
+  };
+}
+
+/* =========================================================
+   SAVE / UPDATE PAGE
+========================================================= */
+
+async function savePage(
+  slug,
+  html,
+  ownerKey,
+  ownerType
+) {
+
+  const existing =
+    await Page.findOne({
+      slug
+    });
+
+  /*
+    Normal user cannot overwrite
+    another user's page.
+  */
+
+  if (
+    existing &&
+    ownerType === "user" &&
+    existing.ownerKey !== ownerKey
+  ) {
+
+    const error = new Error(
+      "এই site name অন্য user ব্যবহার করছে।"
+    );
+
+    error.status = 409;
+
+    throw error;
+  }
+
+  /*
+    Upload new file FIRST.
+    Old file will be deleted only
+    after successful upload.
+  */
+
+  const uploaded =
+    await uploadHTML(
+      slug,
+      html,
+      ownerKey,
+      ownerType
+    );
+
+  if (existing) {
+
+    const oldFileId =
+      existing.fileId;
+
+    await Page.updateOne(
+      {
+        _id: existing._id
+      },
+      {
+        $set: {
+          fileId: uploaded.fileId,
+          sizeBytes: uploaded.sizeBytes,
+          ownerKey,
+          ownerType,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    /*
+      Delete old GridFS file.
+    */
+
+    try {
+
+      if (oldFileId) {
+        await bucket.delete(
+          new ObjectId(
+            String(oldFileId)
+          )
+        );
+      }
+
+    } catch (error) {
+      console.warn(
+        "Old GridFS file delete warning:",
+        error.message
+      );
+    }
+
+  } else {
+
+    await Page.create({
+      slug,
+      fileId: uploaded.fileId,
+      sizeBytes: uploaded.sizeBytes,
+      ownerKey,
+      ownerType
+    });
+  }
+
+  return {
+    slug,
+    sizeBytes: uploaded.sizeBytes
+  };
+}
+
+/* =========================================================
+   READ HTML
+========================================================= */
+
+async function readHTML(fileId) {
+
+  return new Promise(
+    (resolve, reject) => {
+
+      const chunks = [];
+
+      const stream =
+        bucket.openDownloadStream(
+          new ObjectId(
+            String(fileId)
+          )
+        );
+
+      stream.on(
+        "data",
+        chunk => chunks.push(chunk)
+      );
+
+      stream.on(
+        "error",
+        reject
+      );
+
+      stream.on(
+        "end",
+        () => {
+
+          const buffer =
+            Buffer.concat(chunks);
+
+          resolve(
+            buffer.toString("utf8")
+          );
+        }
+      );
+    }
+  );
+}
+
+/* =========================================================
+   USER CREATE
+   MAX 1MB
+========================================================= */
+
+app.post(
+  "/api/create",
+
+  express.json({
+    limit: "1mb",
+    strict: true
+  }),
+
+  async (req, res) => {
+
+    try {
+
+      if (await isBanned(req)) {
+
+        return res.status(403).json({
+          error:
+            "আপনাকে ban করা হয়েছে।"
+        });
+      }
+
+      const slug =
+        cleanSlug(
+          req.body?.slug
+        );
+
+      const html =
+        typeof req.body?.htmlContent ===
+        "string"
+          ? req.body.htmlContent
+          : "";
+
+      if (!slug) {
+
+        return res.status(400).json({
+          error:
+            "Valid site name দিন।"
+        });
+      }
+
+      if (!html) {
+
+        return res.status(400).json({
+          error:
+            "HTML code দিন।"
+        });
+      }
+
+      const bytes =
+        Buffer.byteLength(
+          html,
+          "utf8"
+        );
+
+      if (bytes > USER_MAX_BYTES) {
+
+        return res.status(413).json({
+          error:
+            "User HTML সর্বোচ্চ 1MB।"
+        });
+      }
+
+      /*
+        Check quota
+      */
+
+      const quota =
+        await consumeQuota(req);
+
+      if (!quota.ok) {
+
+        if (quota.reason === "user") {
+
+          return res.status(429).json({
+            error:
+              "আজকের 5টি site limit শেষ।"
+          });
+        }
+
+        return res.status(429).json({
+          error:
+            "আজকের global 250 site limit শেষ।"
+        });
+      }
+
+      try {
+
+        const result =
+          await savePage(
+            slug,
+            html,
+            getUserKey(req),
+            "user"
+          );
+
+        return res.json({
+          ok: true,
+          url: `/${result.slug}`,
+          sizeBytes:
+            result.sizeBytes
+        });
+
+      } catch (error) {
+
+        /*
+          Save failed হলে quota
+          ফেরত দেওয়া হবে।
+        */
+
+        await rollbackQuota(req);
+
+        throw error;
+      }
+
+    } catch (error) {
+
+      console.error(
+        "User create error:",
+        error
+      );
+
+      if (
+        error.type ===
+        "entity.too.large"
+      ) {
+
+        return res.status(413).json({
+          error:
+            "User HTML সর্বোচ্চ 1MB।"
+        });
+      }
+
+      return res.status(
+        error.status || 500
+      ).json({
+        error:
+          error.message ||
+          "Server error."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   QUOTA API
+========================================================= */
+
+app.get(
+  "/api/quota",
+  async (req, res) => {
+
+    try {
+
+      const date =
+        getDateKey();
+
+      const owner =
+        getUserKey(req);
+
+      const [
+        userUsage,
+        globalUsage,
+        banned
+      ] = await Promise.all([
+
+        DailyUsage.findOne({
+          key:
+            `${date}:user:${owner}`
+        }).lean(),
+
+        DailyUsage.findOne({
+          key:
+            `${date}:global`
+        }).lean(),
+
+        BannedUser.exists({
+          ownerKey: owner
+        })
+      ]);
+
+      res.json({
+
+        userUsed:
+          userUsage?.count || 0,
+
+        userLimit:
+          USER_DAILY_LIMIT,
+
+        globalUsed:
+          globalUsage?.count || 0,
+
+        globalLimit:
+          GLOBAL_DAILY_LIMIT,
+
+        banned:
+          Boolean(banned)
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Quota error:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Quota unavailable."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   TASKS
+========================================================= */
+
+app.get(
+  "/api/tasks",
+  async (req, res) => {
+
+    try {
+
+      const tasks =
+        await Task.find()
+          .sort({
+            createdAt: -1
+          })
+          .lean();
+
+      res.json(tasks);
+
+    } catch (error) {
+
+      res.status(500).json({
+        error:
+          "Tasks unavailable."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   PUBLIC PAGES
+========================================================= */
+
+app.get(
+  "/api/pages-public",
+  async (req, res) => {
+
+    try {
+
+      const pages =
+        await Page.find()
+          .sort({
+            updatedAt: -1
+          })
+          .select(
+            "slug sizeBytes ownerType createdAt updatedAt"
+          )
+          .lean();
+
+      res.json(
+        pages.map(page => ({
+          ...page,
+          url:
+            `/${page.slug}`
+        }))
+      );
+
+    } catch (error) {
+
+      res.status(500).json({
+        error:
+          "Pages unavailable."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   ADMIN VERIFY
+========================================================= */
+
+app.post(
+  "/api/admin/verify",
+  (req, res) => {
+
+    res.json({
+      ok:
+        isAdmin(req)
+    });
+  }
+);
+
+/* =========================================================
+   ADMIN CREATE
+   MAX 50MB
+========================================================= */
+
+app.post(
+  "/api/admin/create",
+
+  requireAdmin,
+
+  express.json({
+    limit: "50mb",
+    strict: true
+  }),
+
+  async (req, res) => {
+
+    try {
+
+      const slug =
+        cleanSlug(
+          req.body?.slug
+        );
+
+      const html =
+        typeof req.body?.htmlContent ===
+        "string"
+          ? req.body.htmlContent
+          : "";
+
+      if (!slug) {
+
+        return res.status(400).json({
+          error:
+            "Valid site name দিন।"
+        });
+      }
+
+      if (!html) {
+
+        return res.status(400).json({
+          error:
+            "HTML code দিন।"
+        });
+      }
+
+      const bytes =
+        Buffer.byteLength(
+          html,
+          "utf8"
+        );
+
+      if (
+        bytes >
+        ADMIN_MAX_BYTES
+      ) {
+
+        return res.status(413).json({
+          error:
+            "Admin HTML সর্বোচ্চ 50MB।"
+        });
+      }
+
+      const result =
+        await savePage(
+          slug,
+          html,
+          "ADMIN",
+          "admin"
+        );
+
+      res.json({
+        ok: true,
+        url:
+          `/${result.slug}`,
+        sizeBytes:
+          result.sizeBytes
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Admin create error:",
+        error
+      );
+
+      if (
+        error.type ===
+        "entity.too.large"
+      ) {
+
+        return res.status(413).json({
+          error:
+            "Admin HTML সর্বোচ্চ 50MB।"
+        });
+      }
+
+      res.status(
+        error.status || 500
+      ).json({
+        error:
+          error.message ||
+          "Admin create failed."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   ADMIN ADD TASK
+========================================================= */
+
+app.post(
+  "/api/admin/task/add",
+
+  requireAdmin,
+
+  express.json({
+    limit: "100kb"
+  }),
+
+  async (req, res) => {
+
+    try {
+
+      const title =
+        String(
+          req.body?.title || ""
+        ).trim();
+
+      const description =
+        String(
+          req.body?.description || ""
+        );
+
+      const link =
+        String(
+          req.body?.link || ""
+        );
+
+      const badge =
+        String(
+          req.body?.badge || ""
+        );
+
+      if (!title) {
+
+        return res.status(400).json({
+          error:
+            "Task title required."
+        });
+      }
+
+      const task =
+        await Task.create({
+          title,
+          description,
+          link,
+          badge
+        });
+
+      res.json({
+        ok: true,
+        task
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Task add error:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Task add failed."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   ADMIN DELETE TASK
+========================================================= */
+
+app.delete(
+  "/api/admin/task/:id",
+
+  requireAdmin,
+
+  async (req, res) => {
+
+    try {
+
+      if (
+        !mongoose.Types.ObjectId.isValid(
+          req.params.id
+        )
+      ) {
+
+        return res.status(400).json({
+          error:
+            "Invalid task id."
+        });
+      }
+
+      await Task.findByIdAndDelete(
+        req.params.id
+      );
+
+      res.json({
+        ok: true
+      });
+
+    } catch (error) {
+
+      res.status(500).json({
+        error:
+          "Task delete failed."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   ADMIN ALL PAGES
+========================================================= */
+
+app.get(
+  "/api/admin/all-pages",
+
+  requireAdmin,
+
+  async (req, res) => {
+
+    try {
+
+      const pages =
+        await Page.find()
+          .sort({
+            updatedAt: -1
+          })
+          .lean();
+
+      res.json(pages);
+
+    } catch (error) {
+
+      res.status(500).json({
+        error:
+          "Pages unavailable."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   ADMIN DELETE PAGE
+========================================================= */
+
+app.delete(
+  "/api/admin/page/:id",
+
+  requireAdmin,
+
+  async (req, res) => {
+
+    try {
+
+      if (
+        !mongoose.Types.ObjectId.isValid(
+          req.params.id
+        )
+      ) {
+
+        return res.status(400).json({
+          error:
+            "Invalid page id."
+        });
+      }
+
+      const page =
+        await Page.findById(
+          req.params.id
+        );
+
+      if (!page) {
+
+        return res.status(404).json({
+          error:
+            "Page not found."
+        });
+      }
+
+      /*
+        Delete GridFS file
+      */
+
+      try {
+
+        if (page.fileId) {
+
+          await bucket.delete(
+            new ObjectId(
+              String(page.fileId)
+            )
+          );
+        }
+
+      } catch (error) {
+
+        console.warn(
+          "GridFS delete warning:",
+          error.message
+        );
+      }
+
+      await Page.deleteOne({
+        _id: page._id
+      });
+
+      res.json({
+        ok: true
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Delete page error:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Page delete failed."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   ADMIN USERS
+========================================================= */
+
+app.get(
+  "/api/admin/users",
+
+  requireAdmin,
+
+  async (req, res) => {
+
+    try {
+
+      const users =
+        await Page.aggregate([
+
+          {
+            $match: {
+              ownerType: "user"
+            }
+          },
+
+          {
+            $group: {
+              _id: "$ownerKey",
+
+              sites: {
+                $sum: 1
+              },
+
+              lastCreated: {
+                $max: "$updatedAt"
+              }
+            }
+          },
+
+          {
+            $sort: {
+              lastCreated: -1
+            }
+          }
+
+        ]);
+
+      const bans =
+        await BannedUser.find()
+          .lean();
+
+      const banMap =
+        new Map(
+          bans.map(
+            ban => [
+              ban.ownerKey,
+              ban
+            ]
+          )
+        );
+
+      res.json(
+
+        users.map(
+          user => ({
+
+            ownerKey:
+              user._id,
+
+            sites:
+              user.sites,
+
+            lastCreated:
+              user.lastCreated,
+
+            banned:
+              banMap.has(
+                user._id
+              ),
+
+            reason:
+              banMap.get(
+                user._id
+              )?.reason || ""
+          })
+        )
+
+      );
+
+    } catch (error) {
+
+      console.error(
+        "Users error:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Users unavailable."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   ADMIN BAN
+========================================================= */
+
+app.post(
+  "/api/admin/user/ban",
+
+  requireAdmin,
+
+  express.json({
+    limit: "20kb"
+  }),
+
+  async (req, res) => {
+
+    try {
+
+      const ownerKey =
+        String(
+          req.body?.ownerKey || ""
+        );
+
+      const reason =
+        String(
+          req.body?.reason || ""
+        ).slice(0, 300);
+
+      if (
+        !/^[a-f0-9]{64}$/.test(
+          ownerKey
+        )
+      ) {
+
+        return res.status(400).json({
+          error:
+            "Invalid user key."
+        });
+      }
+
+      await BannedUser.updateOne(
+
+        {
+          ownerKey
+        },
+
+        {
+          $set: {
+            reason,
+            createdAt:
+              new Date()
+          }
+        },
+
+        {
+          upsert: true
+        }
+
+      );
+
+      res.json({
+        ok: true
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Ban error:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Ban failed."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   ADMIN UNBAN
+========================================================= */
+
+app.post(
+  "/api/admin/user/unban",
+
+  requireAdmin,
+
+  express.json({
+    limit: "20kb"
+  }),
+
+  async (req, res) => {
+
+    try {
+
+      const ownerKey =
+        String(
+          req.body?.ownerKey || ""
+        );
+
+      await BannedUser.deleteOne({
+        ownerKey
+      });
+
+      res.json({
+        ok: true
+      });
+
+    } catch (error) {
+
+      res.status(500).json({
+        error:
+          "Unban failed."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   ADMIN STATS
+========================================================= */
+
+app.get(
+  "/api/admin/stats",
+
+  requireAdmin,
+
+  async (req, res) => {
+
+    try {
+
+      const date =
+        getDateKey();
+
+      const [
+        sites,
+        tasks,
+        banned,
+        usage
+      ] = await Promise.all([
+
+        Page.countDocuments(),
+
+        Task.countDocuments(),
+
+        BannedUser.countDocuments(),
+
+        DailyUsage.find({
+          date
+        }).lean()
+
+      ]);
+
+      const globalUsage =
+        usage.find(
+          item =>
+            item.ownerKey ===
+            "GLOBAL"
+        );
+
+      res.json({
+
+        sites,
+
+        tasks,
+
+        banned,
+
+        today:
+          globalUsage?.count || 0,
+
+        todayLimit:
+          GLOBAL_DAILY_LIMIT
+
+      });
+
+    } catch (error) {
+
+      res.status(500).json({
+        error:
+          "Stats unavailable."
+      });
+    }
+  }
+);
+
+/* =========================================================
+   HOME UI
+========================================================= */
+
+const INDEX_HTML = `
+<!DOCTYPE html>
+<html lang="bn">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+name="viewport"
+content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"
+>
+
+<title>SJEMAR</title>
+
+<style>
+
+*{
+  box-sizing:border-box;
+  -webkit-tap-highlight-color:transparent;
+}
+
+html,body{
+  margin:0;
+  padding:0;
+  min-height:100%;
+}
+
+body{
+
+  background:
+    radial-gradient(
+      circle at 10% 0%,
+      #20202b,
+      transparent 35%
+    ),
+    radial-gradient(
+      circle at 100% 100%,
+      #1b1521,
+      transparent 35%
+    ),
+    #050507;
+
+  color:#f7f7fa;
+
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+
+  overflow-x:hidden;
+}
+
+body::before{
+
+  content:"";
+
+  position:fixed;
+
+  inset:0;
+
+  pointer-events:none;
+
+  background:
+    linear-gradient(
+      120deg,
+      transparent,
+      rgba(255,255,255,.025),
+      transparent
+    );
+
+}
+
+.container{
+
+  width:min(100%,1000px);
+
+  margin:auto;
+
+  padding:16px;
+
+}
+
+.glass{
+
+  position:relative;
+
+  background:
+    rgba(16,16,21,.72);
+
+  border:
+    1px solid
+    rgba(255,255,255,.10);
+
+  border-radius:24px;
+
+  backdrop-filter:
+    blur(24px);
+
+  -webkit-backdrop-filter:
+    blur(24px);
+
+  box-shadow:
+    0 25px 80px
+    rgba(0,0,0,.45);
+
+  overflow:hidden;
+
+}
+
+.glass::before{
+
+  content:"";
+
+  position:absolute;
+
+  inset:0;
+
+  border-radius:inherit;
+
+  padding:1px;
+
+  background:
+    conic-gradient(
+      from var(--angle),
+      #fff0,
+      #ffffff55,
+      #fff0,
+      #ffffff44,
+      #fff0
+    );
+
+  -webkit-mask:
+    linear-gradient(#000 0 0)
+    content-box,
+    linear-gradient(#000 0 0);
+
+  -webkit-mask-composite:xor;
+
+  mask-composite:exclude;
+
+  animation:
+    rotateBorder 5s linear infinite;
+
+  pointer-events:none;
+
+}
+
+@property --angle{
+
+  syntax:"<angle>";
+
+  initial-value:0deg;
+
+  inherits:false;
+
+}
+
+@keyframes rotateBorder{
+
+  to{
+    --angle:360deg;
+  }
+
+}
+
+header{
+
+  padding:22px;
+
+  display:flex;
+
+  align-items:center;
+
+  justify-content:space-between;
+
+  gap:15px;
+
+}
+
+.logo{
+
+  font-size:25px;
+
+  font-weight:900;
+
+  letter-spacing:-1px;
+
+}
+
+.subtitle{
+
+  color:#8f8f99;
+
+  font-size:13px;
+
+  margin-top:4px;
+
+}
+
+.status{
+
+  padding:8px 12px;
+
+  border-radius:999px;
+
+  border:
+    1px solid
+    #303039;
+
+  background:#0d0d11;
+
+  color:#aaa;
+
+  font-size:12px;
+
+}
+
+.tabs{
+
+  margin-top:12px;
+
+  padding:8px;
+
+  display:flex;
+
+  gap:8px;
+
+  overflow:auto;
+
+}
+
+.tab{
+
+  flex:1;
+
+  min-width:80px;
+
+  border:0;
+
+  border-radius:15px;
+
+  padding:12px;
+
+  background:#101014;
+
+  color:#999;
+
+  cursor:pointer;
+
+}
+
+.tab.active{
+
+  background:#fff;
+
+  color:#000;
+
+  font-weight:700;
+
+}
+
+.panel{
+
+  display:none;
+
+  margin-top:12px;
+
+  padding:22px;
+
+}
+
+.panel.active{
+
+  display:block;
+
+}
+
+h1,h2,h3{
+
+  margin-top:0;
+
+}
+
+h2{
+
+  font-size:22px;
+
+}
+
+label{
+
+  display:block;
+
+  color:#a2a2ab;
+
+  margin:
+    14px
+    0
+    7px;
+
+  font-size:13px;
+
+}
+
+input,
+textarea{
+
+  width:100%;
+
+  color:#fff;
+
+  background:#09090d;
+
+  border:
+    1px solid
+    #303038;
+
+  outline:none;
+
+  border-radius:15px;
+
+  padding:14px;
+
+  font-size:14px;
+
+}
+
+input:focus,
+textarea:focus{
+
+  border-color:#777;
+
+}
+
+textarea{
+
+  min-height:320px;
+
+  resize:vertical;
+
+  line-height:1.5;
+
+}
+
+button{
+
+  border:0;
+
+  cursor:pointer;
+
+}
+
+.primary{
+
+  background:#fff;
+
+  color:#000;
+
+  padding:13px 18px;
+
+  border-radius:14px;
+
+  font-weight:800;
+
+}
+
+.secondary{
+
+  background:#15151a;
+
+  color:#fff;
+
+  border:
+    1px solid
+    #303038;
+
+  padding:11px 15px;
+
+  border-radius:13px;
+
+}
+
+.stats{
+
+  display:grid;
+
+  grid-template-columns:
+    repeat(3,1fr);
+
+  gap:10px;
+
+  margin:
+    15px 0;
+
+}
+
+.stat{
+
+  padding:16px;
+
+  border-radius:17px;
+
+  background:#0b0b0f;
+
+  border:
+    1px solid
+    #292930;
+
+}
+
+.stat span{
+
+  display:block;
+
+  color:#85858e;
+
+  font-size:12px;
+
+  margin-bottom:7px;
+
+}
+
+.stat b{
+
+  font-size:20px;
+
+}
+
+.row{
+
+  display:grid;
+
+  grid-template-columns:
+    1fr 1fr;
+
+  gap:12px;
+
+}
+
+.list{
+
+  display:grid;
+
+  gap:10px;
+
+  margin-top:15px;
+
+}
+
+.item{
+
+  padding:15px;
+
+  border-radius:17px;
+
+  background:#0b0b0f;
+
+  border:
+    1px solid
+    #292930;
+
+}
+
+.item-title{
+
+  font-weight:800;
+
+}
+
+.item-meta{
+
+  color:#888892;
+
+  font-size:12px;
+
+  margin-top:5px;
+
+}
+
+.item a{
+
+  display:inline-block;
+
+  margin-top:10px;
+
+  color:#fff;
+
+}
+
+.danger{
+
+  color:#ff7474;
+
+}
+
+.success{
+
+  color:#74e0a4;
+
+}
+
+.muted{
+
+  color:#888892;
+
+}
+
+hr{
+
+  border:0;
+
+  border-top:
+    1px solid
+    #292930;
+
+  margin:25px 0;
+
+}
+
+.loader{
+
+  position:fixed;
+
+  inset:0;
+
+  z-index:999;
+
+  display:grid;
+
+  place-items:center;
+
+  background:#050507;
+
+  transition:
+    opacity .4s,
+    visibility .4s;
+
+}
+
+.loader.hide{
+
+  opacity:0;
+
+  visibility:hidden;
+
+}
+
+.loader-title{
+
+  font-size:30px;
+
+  font-weight:900;
+
+  animation:
+    pulse 1s
+    ease-in-out
+    infinite alternate;
+
+}
+
+@keyframes pulse{
+
+  to{
+    opacity:.35;
+    transform:scale(1.04);
+  }
+
+}
+
+.admin-only{
+
+  display:none;
+
+}
+
+@media(max-width:700px){
+
+  .container{
+    padding:10px;
+  }
+
+  .row{
+    grid-template-columns:1fr;
+  }
+
+  .stats{
+    grid-template-columns:1fr;
+  }
+
+  .panel{
+    padding:16px;
+  }
+
+  header{
+    padding:18px;
+  }
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div
+id="loader"
+class="loader"
+>
+<div class="loader-title">
+SJEMAR
+</div>
+</div>
+
+<div class="container">
+
+<header class="glass">
+
+<div>
+
+<div class="logo">
+SJEMAR
+</div>
+
+<div class="subtitle">
+HTML Hosting Platform
+</div>
+
+</div>
+
+<div
+id="status"
+class="status"
+>
+Online
+</div>
+
+</header>
+
+
+<div class="tabs glass">
+
+<button
+class="tab active"
+data-tab="host"
+>
+Host
+</button>
+
+<button
+class="tab"
+data-tab="tasks"
+>
+Tasks
+</button>
+
+<button
+class="tab"
+data-tab="links"
+>
+Links
+</button>
+
+<button
+class="tab"
+data-tab="admin"
+>
+Admin
+</button>
+
+</div>
+
+
+<!-- HOST -->
+
+<section
+id="host"
+class="panel glass active"
+>
+
+<h2>
+Create Site
+</h2>
+
+<div class="stats">
+
+<div class="stat">
+
+<span>
+Your daily sites
+</span>
+
+<b>
+<span
+id="userUsed"
+style="display:inline"
+>
+-
+</span>
+/
+5
+</b>
+
+</div>
+
+<div class="stat">
+
+<span>
+Global today
+</span>
+
+<b>
+<span
+id="globalUsed"
+style="display:inline"
+>
+-
+</span>
+/
+250
+</b>
+
+</div>
+
+<div class="stat">
+
+<span>
+Maximum HTML
+</span>
+
+<b>
+1MB
+</b>
+
+</div>
+
+</div>
+
+
+<div class="row">
+
+<div>
+
+<label>
+Site name
+</label>
+
+<input
+id="slug"
+placeholder="my-site"
+/>
+
+</div>
+
+
+<div>
+
+<label>
+HTML file
+</label>
+
+<input
+id="htmlFile"
+type="file"
+accept=".html,.htm,text/html"
+/>
+
+</div>
+
+</div>
+
+
+<label>
+HTML code
+</label>
+
+<textarea
+id="htmlCode"
+placeholder="<!doctype html>
+<html>
+...
+</html>"
+></textarea>
+
+
+<br>
+
+<button
+id="createBtn"
+class="primary"
+>
+Create Site
+</button>
+
+<span
+id="createMsg"
+class="muted"
+style="margin-left:10px"
+></span>
+
+</section>
+
+
+<!-- TASKS -->
+
+<section
+id="tasks"
+class="panel glass"
+>
+
+<h2>
+Tasks
+</h2>
+
+<div
+id="taskList"
+class="list"
+>
+Loading...
+</div>
+
+</section>
+
+
+<!-- LINKS -->
+
+<section
+id="links"
+class="panel glass"
+>
+
+<h2>
+Public Sites
+</h2>
+
+<div
+id="linksList"
+class="list"
+>
+Loading...
+</div>
+
+</section>
+
+
+<!-- ADMIN -->
+
+<section
+id="admin"
+class="panel glass"
+>
+
+<h2>
+Admin Panel
+</h2>
+
+
+<div
+id="loginBox"
+>
+
+<label>
+Admin password
+</label>
+
+<input
+id="adminPassword"
+type="password"
+placeholder="Password"
+/>
+
+<br><br>
+
+<button
+id="loginBtn"
+class="primary"
+>
+Login
+</button>
+
+</div>
+
+
+<div
+id="adminPanel"
+style="display:none"
+>
+
+<div class="stats">
+
+<div class="stat">
+
+<span>
+Total sites
+</span>
+
+<b id="adminSites">
+0
+</b>
+
+</div>
+
+<div class="stat">
+
+<span>
+Tasks
+</span>
+
+<b id="adminTasks">
+0
+</b>
+
+</div>
+
+<div class="stat">
+
+<span>
+Banned users
+</span>
+
+<b id="adminBanned">
+0
+</b>
+
+</div>
+
+</div>
+
+
+<h3>
+Create Admin Site
+</h3>
+
+<input
+id="adminSlug"
+placeholder="admin-site"
+/>
+
+<br><br>
+
+<textarea
+id="adminHTML"
+placeholder="Admin HTML — maximum 50MB"
+></textarea>
+
+<br>
+
+<button
+id="adminCreateBtn"
+class="primary"
+>
+Create Admin Site
+</button>
+
+
+<hr>
+
+
+<h3>
+Add Task
+</h3>
+
+<input
+id="taskTitle"
+placeholder="Task title"
+/>
+
+<br><br>
+
+<input
+id="taskLink"
+placeholder="https://example.com"
+/>
+
+<br><br>
+
+<input
+id="taskBadge"
+placeholder="NEW"
+/>
+
+<br><br>
+
+<textarea
+id="taskDescription"
+style="min-height:120px"
+placeholder="Task description"
+></textarea>
+
+<br>
+
+<button
+id="addTaskBtn"
+class="secondary"
+>
+Add Task
+</button>
+
+
+<hr>
+
+
+<h3>
+All Pages
+</h3>
+
+<div
+id="adminPages"
+class="list"
+>
+</div>
+
+
+<hr>
+
+
+<h3>
+Users
+</h3>
+
+<div
+id="adminUsers"
+class="list"
+>
+</div>
+
+</div>
+
+</section>
+
+</div>
+
+
+<script>
+
+const $ =
+id =>
+document.getElementById(id);
+
+let adminPass = "";
+
+
+/* =====================================================
+   API
+===================================================== */
+
+async function api(
+  url,
+  options = {}
+){
+
+  const response =
+    await fetch(
+      url,
+      options
+    );
+
+  const data =
+    await response
+      .json()
+      .catch(
+        () => ({
+          error:
+            "Invalid server response."
+        })
+      );
+
+  if (!response.ok){
+
+    throw new Error(
+      data.error ||
+      "Request failed."
+    );
+  }
+
+  return data;
+}
+
+
+/* =====================================================
+   TABS
+===================================================== */
+
+document
+  .querySelectorAll(".tab")
+  .forEach(
+    button => {
+
+      button.onclick =
+        () => {
+
+          document
+            .querySelectorAll(".tab")
+            .forEach(
+              x =>
+                x.classList
+                  .remove("active")
+            );
+
+          document
+            .querySelectorAll(".panel")
+            .forEach(
+              x =>
+                x.classList
+                  .remove("active")
+            );
+
+          button.classList
+            .add("active");
+
+          $(
+            button.dataset.tab
+          ).classList
+            .add("active");
+        };
+
+    }
+  );
+
+
+/* =====================================================
+   ESCAPE
+===================================================== */
+
+function escapeHTML(
+  value
+){
+
+  return String(
+    value ?? ""
+  ).replace(
+    /[&<>"']/g,
+    char => ({
+
+      "&":"&amp;",
+      "<":"&lt;",
+      ">":"&gt;",
+      '"':"&quot;",
+      "'":"&#39;"
+
+    })[char]
+  );
+}
+
+
+/* =====================================================
+   FILE TO HTML
+===================================================== */
+
+$("htmlFile").onchange =
+  async event => {
+
+    const file =
+      event.target.files[0];
+
+    if (!file) return;
+
+    if (
+      file.size >
+      1024 * 1024
+    ){
+
+      alert(
+        "HTML file সর্বোচ্চ 1MB।"
+      );
+
+      event.target.value = "";
+
+      return;
+    }
+
+    try {
+
+      $("htmlCode").value =
+        await file.text();
+
+    } catch {
+
+      alert(
+        "File read করা যায়নি।"
+      );
+    }
+  };
+
+
+/* =====================================================
+   USER CREATE
+===================================================== */
+
+$("createBtn").onclick =
+  async () => {
+
+    const message =
+      $("createMsg");
+
+    message.textContent =
+      "Creating...";
+
+    message.className =
+      "muted";
+
+    try {
+
+      const html =
+        $("htmlCode").value;
+
+      const bytes =
+        new Blob([
+          html
+        ]).size;
+
+      if (
+        bytes >
+        1024 * 1024
+      ){
+
+        throw new Error(
+          "HTML সর্বোচ্চ 1MB।"
+        );
+      }
+
+      const result =
+        await api(
+          "/api/create",
+          {
+
+            method:"POST",
+
+            headers:{
+              "Content-Type":
+                "application/json"
+            },
+
+            body:
+              JSON.stringify({
+
+                slug:
+                  $("slug").value,
+
+                htmlContent:
+                  html
+
+              })
+
+          }
+        );
+
+      message.textContent =
+        "Created: " +
+        location.origin +
+        result.url;
+
+      message.className =
+        "success";
+
+      await loadQuota();
+      await loadLinks();
+
+    } catch(error){
+
+      message.textContent =
+        error.message;
+
+      message.className =
+        "danger";
+    }
+  };
+
+
+/* =====================================================
+   QUOTA
+===================================================== */
+
+async function loadQuota(){
+
+  try {
+
+    const data =
+      await api(
+        "/api/quota"
+      );
+
+    $("userUsed")
+      .textContent =
+      data.userUsed;
+
+    $("globalUsed")
+      .textContent =
+      data.globalUsed;
+
+    if (data.banned){
+
+      $("status")
+        .textContent =
+        "BANNED";
+
+      $("status")
+        .className =
+        "status danger";
+
+    } else {
+
+      $("status")
+        .textContent =
+        "Online";
+
+    }
+
+  } catch {
+
+    $("status")
+      .textContent =
+      "Offline";
+  }
+}
+
+
+/* =====================================================
+   TASKS
+===================================================== */
+
+async function loadTasks(){
+
+  try {
+
+    const tasks =
+      await api(
+        "/api/tasks"
+      );
+
+    if (!tasks.length){
+
+      $("taskList").innerHTML =
+        '<div class="muted">No tasks.</div>';
+
+      return;
+    }
+
+    $("taskList").innerHTML =
+      tasks
+        .map(
+          task => `
+
+<div class="item">
+
+<div class="item-title">
+${escapeHTML(task.title)}
+</div>
+
+<div class="item-meta">
+${escapeHTML(
+  task.badge || ""
+)}
+</div>
+
+<div class="item-meta">
+${escapeHTML(
+  task.description || ""
+)}
+</div>
+
+${
+task.link
+?
+`
+<a
+href="${escapeHTML(task.link)}"
+target="_blank"
+rel="noopener"
+>
+Open Task →
+</a>
+`
+:
+""
+}
+
+</div>
+
+`
+        )
+        .join("");
+
+  } catch(error){
+
+    $("taskList").innerHTML =
+      '<div class="danger">Tasks load failed.</div>';
+  }
+}
+
+
+/* =====================================================
+   LINKS
+===================================================== */
+
+async function loadLinks(){
+
+  try {
+
+    const pages =
+      await api(
+        "/api/pages-public"
+      );
+
+    if (!pages.length){
+
+      $("linksList").innerHTML =
+        '<div class="muted">No sites yet.</div>';
+
+      return;
+    }
+
+    $("linksList").innerHTML =
+      pages
+        .map(
+          page => `
+
+<div class="item">
+
+<div class="item-title">
+/${escapeHTML(
+  page.slug
+)}
+</div>
+
+<div class="item-meta">
+
+${Math.ceil(
+  page.sizeBytes / 1024
+)} KB
+
+·
+
+${escapeHTML(
+  page.ownerType
+)}
+
+</div>
+
+<a
+href="/${encodeURIComponent(page.slug)}"
+target="_blank"
+rel="noopener"
+>
+Open Site →
+</a>
+
+</div>
+
+`
+        )
+        .join("");
+
+  } catch(error){
+
+    $("linksList").innerHTML =
+      '<div class="danger">Sites load failed.</div>';
+  }
+}
+
+
+/* =====================================================
+   ADMIN LOGIN
+===================================================== */
+
+$("loginBtn").onclick =
+  async () => {
+
+    const password =
+      $("adminPassword").value;
+
+    if (!password){
+
+      alert(
+        "Admin password দিন।"
+      );
+
+      return;
+    }
+
+    try {
+
+      const result =
+        await api(
+          "/api/admin/verify",
+          {
+
+            method:"POST",
+
+            headers:{
+              "x-admin-pass":
+                password
+            }
+
+          }
+        );
+
+      if (!result.ok){
+
+        throw new Error(
+          "Wrong admin password."
+        );
+      }
+
+      adminPass =
+        password;
+
+      sessionStorage.setItem(
+        "SJEMAR_ADMIN",
+        password
+      );
+
+      $("loginBox")
+        .style.display =
+        "none";
+
+      $("adminPanel")
+        .style.display =
+        "block";
+
+      await loadAdmin();
+
+    } catch(error){
+
+      alert(
+        error.message
+      );
+    }
+  };
+
+
+/* =====================================================
+   ADMIN CREATE
+===================================================== */
+
+$("adminCreateBtn").onclick =
+  async () => {
+
+    try {
+
+      const html =
+        $("adminHTML").value;
+
+      const bytes =
+        new Blob([
+          html
+        ]).size;
+
+      if (
+        bytes >
+        50 * 1024 * 1024
+      ){
+
+        throw new Error(
+          "Admin HTML সর্বোচ্চ 50MB।"
+        );
+      }
+
+      const result =
+        await api(
+          "/api/admin/create",
+          {
+
+            method:"POST",
+
+            headers:{
+
+              "Content-Type":
+                "application/json",
+
+              "x-admin-pass":
+                adminPass
+
+            },
+
+            body:
+              JSON.stringify({
+
+                slug:
+                  $("adminSlug").value,
+
+                htmlContent:
+                  html
+
+              })
+
+          }
+        );
+
+      alert(
+        "Admin site created: " +
+        result.url
+      );
+
+      $("adminSlug")
+        .value = "";
+
+      $("adminHTML")
+        .value = "";
+
+      await loadAdmin();
+      await loadLinks();
+
+    } catch(error){
+
+      alert(
+        error.message
+      );
+    }
+  };
+
+
+/* =====================================================
+   ADMIN ADD TASK
+===================================================== */
+
+$("addTaskBtn").onclick =
+  async () => {
+
+    try {
+
+      await api(
+        "/api/admin/task/add",
+        {
+
+          method:"POST",
+
+          headers:{
+
+            "Content-Type":
+              "application/json",
+
+            "x-admin-pass":
+              adminPass
+
+          },
+
+          body:
+            JSON.stringify({
+
+              title:
+                $("taskTitle").value,
+
+              description:
+                $("taskDescription").value,
+
+              link:
+                $("taskLink").value,
+
+              badge:
+                $("taskBadge").value
+
+            })
+
+        }
+      );
+
+      alert(
+        "Task added."
+      );
+
+      $("taskTitle").value =
+        "";
+
+      $("taskDescription").value =
+        "";
+
+      $("taskLink").value =
+        "";
+
+      $("taskBadge").value =
+        "";
+
+      await loadTasks();
+      await loadAdmin();
+
+    } catch(error){
+
+      alert(
+        error.message
+      );
+    }
+  };
+
+
+/* =====================================================
+   ADMIN LOAD
+===================================================== */
+
+async function loadAdmin(){
+
+  const headers = {
+    "x-admin-pass":
+      adminPass
+  };
+
+  try {
+
+    const [
+      stats,
+      pages,
+      users
+    ] = await Promise.all([
+
+      api(
+        "/api/admin/stats",
+        { headers }
+      ),
+
+      api(
+        "/api/admin/all-pages",
+        { headers }
+      ),
+
+      api(
+        "/api/admin/users",
+        { headers }
+      )
+
+    ]);
+
+
+    $("adminSites")
+      .textContent =
+      stats.sites;
+
+    $("adminTasks")
+      .textContent =
+      stats.tasks;
+
+    $("adminBanned")
+      .textContent =
+      stats.banned;
+
+
+    /* Pages */
+
+    if (!pages.length){
+
+      $("adminPages").innerHTML =
+        '<div class="muted">No pages.</div>';
+
+    } else {
+
+      $("adminPages").innerHTML =
+        pages
+          .map(
+            page => `
+
+<div class="item">
+
+<div class="item-title">
+
+/${escapeHTML(
+  page.slug
+)}
+
+</div>
+
+<div class="item-meta">
+
+${Math.ceil(
+  page.sizeBytes / 1024
+)} KB
+
+·
+
+${escapeHTML(
+  page.ownerType
+)}
+
+</div>
+
+<br>
+
+<button
+class="secondary"
+onclick="deletePage('${page._id}')"
+>
+Delete
+</button>
+
+</div>
+
+`
+          )
+          .join("");
+    }
+
+
+    /* Users */
+
+    if (!users.length){
+
+      $("adminUsers").innerHTML =
+        '<div class="muted">No users found.</div>';
+
+    } else {
+
+      $("adminUsers").innerHTML =
+        users
+          .map(
+            user => `
+
+<div class="item">
+
+<div class="item-title">
+
+User
+${escapeHTML(
+  user.ownerKey.slice(
+    0,
+    16
+  )
+)}...
+
+</div>
+
+<div class="item-meta">
+
+Sites:
+${user.sites}
+
+<br>
+
+Status:
+${
+user.banned
+?
+'<span class="danger">BANNED</span>'
+:
+'<span class="success">ACTIVE</span>'
+}
+
+</div>
+
+<br>
+
+<button
+class="secondary"
+onclick="toggleBan(
+'${user.ownerKey}',
+${user.banned}
+)"
+>
+
+${
+user.banned
+?
+"Unban"
+:
+"Ban"
+}
+
+</button>
+
+</div>
+
+`
+          )
+          .join("");
+    }
+
+  } catch(error){
+
+    alert(
+      error.message
+    );
+  }
+}
+
+
+/* =====================================================
+   DELETE PAGE
+===================================================== */
+
+window.deletePage =
+  async function(id){
+
+    if (
+      !confirm(
+        "এই site delete করবেন?"
+      )
+    ){
+
+      return;
+    }
+
+    try {
+
+      await api(
+        "/api/admin/page/" +
+        id,
+        {
+
+          method:"DELETE",
+
+          headers:{
+            "x-admin-pass":
+              adminPass
+          }
+
+        }
+      );
+
+      await loadAdmin();
+      await loadLinks();
+
+    } catch(error){
+
+      alert(
+        error.message
+      );
+    }
+  };
+
+
+/* =====================================================
+   BAN / UNBAN
+===================================================== */
+
+window.toggleBan =
+  async function(
+    ownerKey,
+    banned
+  ){
+
+    try {
+
+      await api(
+        "/api/admin/user/" +
+        (
+          banned
+          ? "unban"
+          : "ban"
+        ),
+        {
+
+          method:"POST",
+
+          headers:{
+
+            "Content-Type":
+              "application/json",
+
+            "x-admin-pass":
+              adminPass
+
+          },
+
+          body:
+            JSON.stringify({
+              ownerKey
+            })
+
+        }
+      );
+
+      await loadAdmin();
+
+    } catch(error){
+
+      alert(
+        error.message
+      );
+    }
+  };
+
+
+/* =====================================================
+   RESTORE ADMIN SESSION
+===================================================== */
+
+async function restoreAdmin(){
+
+  const saved =
+    sessionStorage.getItem(
+      "SJEMAR_ADMIN"
+    );
+
+  if (!saved) return;
+
+  try {
+
+    const result =
+      await api(
+        "/api/admin/verify",
+        {
+
+          method:"POST",
+
+          headers:{
+            "x-admin-pass":
+              saved
+          }
+
+        }
+      );
+
+    if (!result.ok) return;
+
+    adminPass =
+      saved;
+
+    $("loginBox")
+      .style.display =
+      "none";
+
+    $("adminPanel")
+      .style.display =
+      "block";
+
+    await loadAdmin();
+
+  } catch {
+
+    sessionStorage.removeItem(
+      "SJEMAR_ADMIN"
+    );
+  }
+}
+
+
+/* =====================================================
+   START
+===================================================== */
+
+(async function(){
+
+  try {
+
+    await Promise.all([
+      loadQuota(),
+      loadTasks(),
+      loadLinks(),
+      restoreAdmin()
+    ]);
+
+  } finally {
+
+    setTimeout(
+      () => {
+
+        $("loader")
+          .classList
+          .add("hide");
+
+      },
+      450
+    );
+  }
+
+})();
+
+</script>
+
+</body>
+
+</html>
+`;
+
+
+/* =========================================================
+   HOME
+========================================================= */
+
+app.get(
+  "/",
+  (req, res) => {
+
+    res
+      .status(200)
+      .type("html")
+      .send(INDEX_HTML);
+  }
+);
+
+
+/* =========================================================
+   SERVE USER / ADMIN HTML
+========================================================= */
+
+app.get(
+  "/:slug",
+  async (req, res, next) => {
+
+    /*
+      Do not catch files such as favicon.ico
+    */
+
+    if (
+      req.params.slug.includes(".")
+    ) {
+
+      return next();
+    }
+
+    try {
+
+      const slug =
+        cleanSlug(
+          req.params.slug
+        );
+
+      if (!slug) {
+
+        return res
+          .status(404)
+          .send("Not Found");
+      }
+
+      const page =
+        await Page.findOne({
+          slug
+        }).lean();
+
+      if (!page) {
+
+        return res
+          .status(404)
+          .type("html")
+          .send(`
+<!doctype html>
+<html>
+<head>
+<title>404</title>
+<style>
+body{
+background:#050507;
+color:white;
+font-family:system-ui;
+display:grid;
+place-items:center;
+min-height:100vh;
+}
+</style>
+</head>
+<body>
+<h1>404 — Site Not Found</h1>
+</body>
+</html>
+`);
+      }
+
+      const html =
+        await readHTML(
+          page.fileId
+        );
+
+      res
+        .status(200)
+        .type("html")
+        .send(html);
+
+    } catch(error) {
+
+      console.error(
+        "Page serve error:",
+        error
+      );
+
+      res
+        .status(500)
+        .type("html")
+        .send(
+          "<h1>Site unavailable</h1>"
+        );
+    }
+  }
+);
+
+
+/* =========================================================
+   404
+========================================================= */
+
+app.use(
+  (req, res) => {
+
+    if (
+      req.path.startsWith("/api/")
+    ) {
+
+      return res.status(404).json({
+        error:
+          "API endpoint not found."
+      });
+    }
+
+    res
+      .status(404)
+      .type("html")
+      .send(`
+<!doctype html>
+<html>
+<head>
+<title>404</title>
+</head>
+<body style="
+background:#050507;
+color:white;
+font-family:system-ui;
+padding:40px;
+">
+<h1>404</h1>
+<p>Page not found.</p>
+</body>
+</html>
+`);
+  }
+);
+
+
+/* =========================================================
+   ERROR HANDLER
+========================================================= */
+
+app.use(
+  (error, req, res, next) => {
+
+    console.error(
+      "Unhandled error:",
+      error
+    );
+
+    if (
+      error.type ===
+      "entity.too.large"
+    ) {
+
+      return res.status(413).json({
+        error:
+          "Upload size limit exceeded."
+      });
+    }
+
+    if (
+      error instanceof SyntaxError &&
+      "body" in error
+    ) {
+
+      return res.status(400).json({
+        error:
+          "Invalid JSON."
+      });
+    }
+
+    res.status(500).json({
+      error:
+        "Internal server error."
+    });
+  }
+);
+
+
+/* =========================================================
+   DATABASE + START SERVER
+========================================================= */
+
+mongoose
+  .connect(
+    MONGO_URI,
+    {
+      serverSelectionTimeoutMS:
+        10000
+    }
+  )
+
+  .then(() => {
+
+    console.log(
+      "✅ MongoDB Connected"
+    );
+
+    bucket =
+      new GridFSBucket(
+        mongoose.connection.db,
+        {
+          bucketName:
+            "sjemarPages"
+        }
+      );
+
+    app.listen(
+      PORT,
+      "0.0.0.0",
+      () => {
+
+        console.log(
+          `🚀 SJEMAR running on port ${PORT}`
+        );
+
+      }
+    );
+
+  })
+
+  .catch(error => {
+
+    console.error(
+      "❌ MongoDB connection failed:",
+      error
+    );
+
+    process.exit(1);
+  });
+
+
+/* =========================================================
+   PROCESS ERRORS
+========================================================= */
+
+process.on(
+  "unhandledRejection",
+  error => {
+
+    console.error(
+      "Unhandled Rejection:",
+      error
+    );
+  }
+);
+
+process.on(
+  "uncaughtException",
+  error => {
+
+    console.error(
+      "Uncaught Exception:",
+      error
+    );
+  }
+);  createdAt: {
     type: Date,
     default: Date.now
   }
