@@ -1,104 +1,3041 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const https = require('https');
+"use strict";
+
+/*
+=========================================================
+ SJEMAR HOSTING ENGINE
+ Version: 2.0.0
+
+ Features:
+ - HTML Hosting
+ - Custom Slug
+ - Admin Dashboard
+ - Create / Edit / Delete Sites
+ - Publish / Unpublish
+ - Preview
+ - Search
+ - Statistics
+ - OLED Glass UI
+ - Render Compatible
+ - JSON Database
+=========================================================
+*/
+
+const express = require("express");
+const bodyParser = require("body-parser");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 
 const app = express();
 
-app.use(bodyParser.urlencoded({ limit: '100mb', extended: true }));
-app.use(bodyParser.json({ limit: '100mb' }));
+/* =========================================================
+   CONFIG
+========================================================= */
 
-const FIREBASE_DB_URL = "https://sifatby-38886-default-rtdb.firebaseio.com";
-const ADMIN_PASS = "py.py.php";
+const PORT = process.env.PORT || 3000;
 
-// Helper function to fetch Firebase via REST API
-function firebaseFetch(url, method = 'GET', data = null) {
-  return new Promise((resolve, reject) => {
-    const parsedUrl = new URL(url);
-    const options = {
-      hostname: parsedUrl.hostname,
-      path: parsedUrl.pathname + (parsedUrl.search || ''),
-      method: method,
-      headers: { 'Content-Type': 'application/json' }
-    };
+const ADMIN_PASS =
+  process.env.ADMIN_PASS || "py.py.php";
 
-    const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
-      res.on('end', () => {
-        try {
-          resolve(body ? JSON.parse(body) : null);
-        } catch (e) {
-          resolve(body);
-        }
-      });
+const DATA_DIR =
+  process.env.DATA_DIR || path.join(__dirname, "data");
+
+const DB_FILE =
+  path.join(DATA_DIR, "sites.json");
+
+const MAX_HTML_SIZE =
+  5 * 1024 * 1024;
+
+/* =========================================================
+   APP CONFIG
+========================================================= */
+
+app.disable("x-powered-by");
+
+app.use(
+  bodyParser.urlencoded({
+    extended: true,
+    limit: "6mb"
+  })
+);
+
+app.use(
+  bodyParser.json({
+    limit: "6mb"
+  })
+);
+
+/* =========================================================
+   SECURITY HEADERS
+========================================================= */
+
+app.use((req, res, next) => {
+
+  res.setHeader(
+    "X-Content-Type-Options",
+    "nosniff"
+  );
+
+  res.setHeader(
+    "X-Frame-Options",
+    "SAMEORIGIN"
+  );
+
+  res.setHeader(
+    "Referrer-Policy",
+    "strict-origin-when-cross-origin"
+  );
+
+  res.setHeader(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=()"
+  );
+
+  next();
+});
+
+/* =========================================================
+   DATABASE
+========================================================= */
+
+function ensureDatabase() {
+
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, {
+      recursive: true
     });
+  }
 
-    req.on('error', (err) => reject(err));
-    if (data) req.write(JSON.stringify(data));
-    req.end();
-  });
+  if (!fs.existsSync(DB_FILE)) {
+
+    fs.writeFileSync(
+      DB_FILE,
+      JSON.stringify(
+        {
+          sites: []
+        },
+        null,
+        2
+      )
+    );
+  }
 }
 
-// ==========================================
-// ১. ইউজার ও অ্যাডমিন পেজ (OLED Pitch Black + Pure SVG)
-// ==========================================
-app.get('/', (req, res) => {
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(`<!DOCTYPE html>
-<html lang="bn">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>SJEMAR Cloud Engine</title>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
-  <style>
-    :root {
-      --bg: #000000;
-      --card-bg: rgba(10, 10, 14, 0.8);
-      --card-border: rgba(255, 255, 255, 0.08);
-      --accent: #2563EB;
-      --accent-glow: rgba(37, 99, 235, 0.35);
-      --text: #FFFFFF;
-      --text-muted: #71717A;
-      --text-sub: #A1A1AA;
-      --border-subtle: rgba(255, 255, 255, 0.05);
-      --danger: #EF4444;
-      --success: #10B981;
+ensureDatabase();
+
+/* =========================================================
+   DATABASE HELPERS
+========================================================= */
+
+function readDB() {
+
+  try {
+
+    const raw =
+      fs.readFileSync(
+        DB_FILE,
+        "utf8"
+      );
+
+    const db =
+      JSON.parse(raw);
+
+    if (!db.sites) {
+      db.sites = [];
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Plus Jakarta Sans", sans-serif; -webkit-tap-highlight-color: transparent; }
-    body { background: #000000 !important; color: var(--text); min-height: 100vh; padding-bottom: 110px; overflow-x: hidden; position: relative; }
 
-    .header { position: sticky; top: 0; z-index: 40; backdrop-filter: blur(35px); -webkit-backdrop-filter: blur(35px); background: rgba(0, 0, 0, 0.85); border-bottom: 1px solid var(--card-border); padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; }
-    .brand-wrap { display: flex; align-items: center; gap: 10px; }
-    .brand-logo { width: 32px; height: 32px; border-radius: 10px; background: linear-gradient(135deg, #2563EB, #7C3AED); display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px var(--accent-glow); }
-    .brand-logo svg { width: 18px; height: 18px; stroke: #fff; stroke-width: 2.5; fill: none; }
-    .brand-title { font-size: 17px; font-weight: 800; letter-spacing: -0.4px; color: #FFFFFF; }
-    .status-badge { font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 16px; background: rgba(37,99,235,0.12); color: #60A5FA; border: 1px solid rgba(37,99,235,0.3); display: flex; align-items: center; gap: 6px; }
-    .pulse-dot { width: 6px; height: 6px; border-radius: 50%; background: #3B82F6; box-shadow: 0 0 8px #3B82F6; animation: pulse 1.8s infinite; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    return db;
 
-    .container { max-width: 480px; margin: 0 auto; padding: 18px 14px; position: relative; z-index: 10; }
-    .tab-view { display: none; }
-    .tab-view.active { display: block; animation: oledSlide 0.25s cubic-bezier(0.16, 1, 0.3, 1); }
-    @keyframes oledSlide { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  } catch (error) {
 
-    .glass-card { background: var(--card-bg); backdrop-filter: blur(40px); -webkit-backdrop-filter: blur(40px); border: 1px solid var(--card-border); border-radius: 22px; padding: 18px; margin-bottom: 16px; box-shadow: 0 20px 45px rgba(0,0,0,0.95); }
-    .card-head { font-size: 15px; font-weight: 800; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; color: #FFFFFF; }
-    .card-head svg { width: 18px; height: 18px; stroke-width: 2.2; flex-shrink: 0; stroke: currentColor; fill: none; }
-    .card-sub { font-size: 12px; color: var(--text-sub); margin-bottom: 16px; line-height: 1.4; }
+    console.error(
+      "Database read error:",
+      error
+    );
 
-    .form-group { margin-bottom: 13px; }
-    .form-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; display: block; }
-    .glass-input, .glass-textarea, .glass-select { width: 100%; background: #000000; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 14px; padding: 13px 14px; color: #FFFFFF; font-size: 13px; outline: none; transition: 0.2s; }
-    .glass-input:focus, .glass-textarea:focus, .glass-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
-    .glass-textarea { font-family: 'JetBrains Mono', monospace; font-size: 12px; resize: vertical; min-height: 80px; }
+    return {
+      sites: []
+    };
+  }
+}
 
-    .toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; background: rgba(255,255,255,0.02); border-radius: 14px; border: 1px solid var(--border-subtle); margin-bottom: 10px; }
-    .toggle-text-title { font-size: 12px; font-weight: 600; color: #FFFFFF; }
-    .toggle-text-desc { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+function writeDB(db) {
 
+  const tempFile =
+    DB_FILE + ".tmp";
+
+  fs.writeFileSync(
+    tempFile,
+    JSON.stringify(
+      db,
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  fs.renameSync(
+    tempFile,
+    DB_FILE
+  );
+}
+
+/* =========================================================
+   ID
+========================================================= */
+
+function generateId() {
+
+  return crypto
+    .randomBytes(12)
+    .toString("hex");
+}
+
+/* =========================================================
+   SLUG
+========================================================= */
+
+function createSlug(value) {
+
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80);
+}
+
+function validSlug(slug) {
+
+  return /^[a-z0-9][a-z0-9-_]{1,79}$/.test(
+    slug
+  );
+}
+
+/* =========================================================
+   HTML VALIDATION
+========================================================= */
+
+function validateHTML(html) {
+
+  if (
+    typeof html !== "string"
+  ) {
+    return false;
+  }
+
+  if (
+    Buffer.byteLength(
+      html,
+      "utf8"
+    ) > MAX_HTML_SIZE
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+/* =========================================================
+   HTML ESCAPE
+========================================================= */
+
+function escapeHTML(value) {
+
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+/* =========================================================
+   ADMIN COOKIE
+========================================================= */
+
+const ADMIN_COOKIE =
+  "sjemar_admin";
+
+/*
+ Simple signed token.
+*/
+
+function createAdminToken() {
+
+  const timestamp =
+    Date.now();
+
+  const raw =
+    timestamp + ":" + ADMIN_PASS;
+
+  const signature =
+    crypto
+      .createHash("sha256")
+      .update(raw)
+      .digest("hex");
+
+  return `${timestamp}.${signature}`;
+}
+
+function verifyAdminToken(token) {
+
+  if (!token) {
+    return false;
+  }
+
+  const parts =
+    token.split(".");
+
+  if (parts.length !== 2) {
+    return false;
+  }
+
+  const timestamp =
+    Number(parts[0]);
+
+  const signature =
+    parts[1];
+
+  if (
+    !Number.isFinite(timestamp)
+  ) {
+    return false;
+  }
+
+  /*
+    Admin session expires after 24 hours.
+  */
+
+  if (
+    Date.now() - timestamp >
+    24 * 60 * 60 * 1000
+  ) {
+    return false;
+  }
+
+  const expected =
+    crypto
+      .createHash("sha256")
+      .update(
+        timestamp + ":" + ADMIN_PASS
+      )
+      .digest("hex");
+
+  return (
+    signature === expected
+  );
+}
+
+function parseCookies(req) {
+
+  const header =
+    req.headers.cookie || "";
+
+  const cookies = {};
+
+  header
+    .split(";")
+    .forEach(part => {
+
+      const index =
+        part.indexOf("=");
+
+      if (index === -1) {
+        return;
+      }
+
+      const key =
+        part
+          .slice(0, index)
+          .trim();
+
+      const value =
+        part
+          .slice(index + 1)
+          .trim();
+
+      cookies[key] =
+        decodeURIComponent(value);
+    });
+
+  return cookies;
+}
+
+function isAdmin(req) {
+
+  const cookies =
+    parseCookies(req);
+
+  return verifyAdminToken(
+    cookies[ADMIN_COOKIE]
+  );
+}
+
+/* =========================================================
+   ADMIN MIDDLEWARE
+========================================================= */
+
+function requireAdmin(req, res, next) {
+
+  if (!isAdmin(req)) {
+
+    return res
+      .status(401)
+      .json({
+        success: false,
+        error: "Unauthorized"
+      });
+  }
+
+  next();
+}
+
+/* =========================================================
+   RATE LIMIT
+========================================================= */
+
+const loginAttempts =
+  new Map();
+
+function loginRateLimit(req, res, next) {
+
+  const ip =
+    req.ip ||
+    req.socket.remoteAddress ||
+    "unknown";
+
+  const now =
+    Date.now();
+
+  const record =
+    loginAttempts.get(ip);
+
+  if (!record) {
+
+    loginAttempts.set(
+      ip,
+      {
+        count: 1,
+        reset: now + 10 * 60 * 1000
+      }
+    );
+
+    return next();
+  }
+
+  if (
+    now >
+    record.reset
+  ) {
+
+    loginAttempts.set(
+      ip,
+      {
+        count: 1,
+        reset: now + 10 * 60 * 1000
+      }
+    );
+
+    return next();
+  }
+
+  if (record.count >= 10) {
+
+    return res
+      .status(429)
+      .json({
+        success: false,
+        error:
+          "Too many login attempts. Try again later."
+      });
+  }
+
+  record.count++;
+
+  next();
+}
+
+/* =========================================================
+   DEFAULT HTML
+========================================================= */
+
+const DEFAULT_HTML = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport"
+content="width=device-width, initial-scale=1.0">
+
+<title>SJEMAR Website</title>
+
+<style>
+
+*{
+box-sizing:border-box;
+}
+
+html,body{
+margin:0;
+padding:0;
+width:100%;
+min-height:100%;
+}
+
+body{
+font-family:
+Inter,
+-apple-system,
+BlinkMacSystemFont,
+"Segoe UI",
+sans-serif;
+
+background:
+radial-gradient(
+circle at top,
+#172033 0%,
+#07090d 45%,
+#020305 100%
+);
+
+color:#fff;
+
+display:flex;
+align-items:center;
+justify-content:center;
+
+padding:24px;
+}
+
+.card{
+
+width:100%;
+max-width:680px;
+
+padding:42px;
+
+border-radius:30px;
+
+background:
+rgba(255,255,255,.055);
+
+border:
+1px solid rgba(255,255,255,.09);
+
+box-shadow:
+0 30px 100px
+rgba(0,0,0,.6),
+
+inset 0 1px 0
+rgba(255,255,255,.08);
+
+backdrop-filter:
+blur(30px);
+
+-webkit-backdrop-filter:
+blur(30px);
+
+text-align:center;
+}
+
+h1{
+margin:0 0 12px;
+font-size:38px;
+letter-spacing:-1.5px;
+}
+
+p{
+color:#9da5b5;
+line-height:1.7;
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="card">
+
+<h1>SJEMAR Hosting</h1>
+
+<p>
+Your website is ready.
+</p>
+
+</div>
+
+</body>
+</html>
+`;
+
+/* =========================================================
+   HOME PAGE
+========================================================= */
+
+app.get("/", (req, res) => {
+
+  res.send(`
+
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+name="viewport"
+content="width=device-width,initial-scale=1.0">
+
+<title>SJEMAR Hosting</title>
+
+<style>
+
+*{
+box-sizing:border-box;
+}
+
+html,body{
+margin:0;
+padding:0;
+min-height:100%;
+}
+
+body{
+
+font-family:
+Inter,
+-apple-system,
+BlinkMacSystemFont,
+"Segoe UI",
+sans-serif;
+
+background:
+#030507;
+
+color:#f5f7fa;
+
+min-height:100vh;
+
+overflow-x:hidden;
+}
+
+body::before{
+
+content:"";
+
+position:fixed;
+
+inset:-30%;
+
+background:
+radial-gradient(
+circle at 20% 10%,
+rgba(255,255,255,.07),
+transparent 28%
+),
+
+radial-gradient(
+circle at 80% 20%,
+rgba(80,120,255,.08),
+transparent 30%
+);
+
+pointer-events:none;
+}
+
+.nav{
+
+position:sticky;
+
+top:14px;
+
+z-index:10;
+
+width:
+calc(100% - 28px);
+
+max-width:1120px;
+
+margin:14px auto;
+
+padding:14px 18px;
+
+display:flex;
+
+align-items:center;
+
+justify-content:space-between;
+
+border:
+1px solid rgba(255,255,255,.08);
+
+background:
+rgba(15,17,22,.65);
+
+backdrop-filter:
+blur(28px);
+
+-webkit-backdrop-filter:
+blur(28px);
+
+border-radius:22px;
+
+box-shadow:
+0 20px 70px
+rgba(0,0,0,.45);
+}
+
+.logo{
+
+font-size:17px;
+
+font-weight:700;
+
+letter-spacing:-.4px;
+}
+
+.status{
+
+font-size:12px;
+
+color:#9ba3b2;
+
+padding:
+8px 12px;
+
+border-radius:999px;
+
+background:
+rgba(255,255,255,.05);
+
+border:
+1px solid rgba(255,255,255,.07);
+}
+
+.hero{
+
+max-width:1120px;
+
+margin:
+100px auto 50px;
+
+padding:
+0 22px;
+
+text-align:center;
+}
+
+.hero h1{
+
+font-size:
+clamp(42px,8vw,78px);
+
+line-height:.98;
+
+letter-spacing:
+-4px;
+
+margin:0;
+
+font-weight:750;
+}
+
+.hero p{
+
+max-width:620px;
+
+margin:
+25px auto 0;
+
+color:#8d96a7;
+
+font-size:16px;
+
+line-height:1.7;
+}
+
+.grid{
+
+max-width:1120px;
+
+margin:auto;
+
+padding:0 22px 70px;
+
+display:grid;
+
+grid-template-columns:
+repeat(3,1fr);
+
+gap:16px;
+}
+
+.card{
+
+padding:28px;
+
+min-height:190px;
+
+border-radius:28px;
+
+background:
+linear-gradient(
+145deg,
+rgba(255,255,255,.075),
+rgba(255,255,255,.025)
+);
+
+border:
+1px solid
+rgba(255,255,255,.08);
+
+box-shadow:
+0 25px 80px
+rgba(0,0,0,.35),
+
+inset 0 1px 0
+rgba(255,255,255,.06);
+
+transition:
+transform .25s ease,
+border-color .25s ease;
+}
+
+.card:hover{
+
+transform:
+translateY(-4px);
+
+border-color:
+rgba(255,255,255,.15);
+}
+
+.card h2{
+
+margin:
+0 0 10px;
+
+font-size:20px;
+}
+
+.card p{
+
+color:#8992a2;
+
+font-size:14px;
+
+line-height:1.6;
+}
+
+footer{
+
+text-align:center;
+
+padding:
+30px 20px 50px;
+
+color:#5e6674;
+
+font-size:12px;
+}
+
+@media(max-width:800px){
+
+.grid{
+grid-template-columns:1fr;
+}
+
+.hero{
+margin-top:70px;
+}
+
+.hero h1{
+letter-spacing:-2.5px;
+}
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="nav">
+
+<div class="logo">
+SJEMAR
+</div>
+
+<div class="status">
+Hosting Engine
+</div>
+
+</div>
+
+<section class="hero">
+
+<h1>
+Simple Web Hosting
+</h1>
+
+<p>
+Upload your HTML project and publish it
+as a clean public link using SJEMAR Hosting.
+</p>
+
+</section>
+
+<section class="grid">
+
+<div class="card">
+
+<h2>
+HTML Hosting
+</h2>
+
+<p>
+Publish a complete HTML, CSS and JavaScript
+website from a single project.
+</p>
+
+</div>
+
+<div class="card">
+
+<h2>
+Fast Links
+</h2>
+
+<p>
+Every published project receives its own
+unique public URL.
+</p>
+
+</div>
+
+<div class="card">
+
+<h2>
+Admin Control
+</h2>
+
+<p>
+Manage, edit, publish and remove projects
+from the private administration panel.
+</p>
+
+</div>
+
+</section>
+
+<footer>
+© 2026 SJEMAR Hosting Engine
+</footer>
+
+</body>
+
+</html>
+
+  `);
+});
+
+/* =========================================================
+   ADMIN LOGIN PAGE
+========================================================= */
+
+app.get("/admin", (req, res) => {
+
+  if (isAdmin(req)) {
+
+    return res.redirect(
+      "/admin/dashboard"
+    );
+  }
+
+  res.send(`
+
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+name="viewport"
+content="width=device-width,initial-scale=1.0">
+
+<title>SJEMAR Admin</title>
+
+<style>
+
+*{
+box-sizing:border-box;
+}
+
+body{
+
+margin:0;
+
+min-height:100vh;
+
+display:flex;
+
+align-items:center;
+
+justify-content:center;
+
+padding:20px;
+
+font-family:
+Inter,
+-apple-system,
+BlinkMacSystemFont,
+"Segoe UI",
+sans-serif;
+
+background:#020304;
+
+color:#fff;
+}
+
+.box{
+
+width:100%;
+
+max-width:420px;
+
+padding:30px;
+
+border-radius:30px;
+
+background:
+rgba(255,255,255,.055);
+
+border:
+1px solid
+rgba(255,255,255,.09);
+
+box-shadow:
+0 30px 100px
+rgba(0,0,0,.6);
+
+backdrop-filter:
+blur(30px);
+}
+
+h1{
+
+margin:0 0 8px;
+
+font-size:28px;
+}
+
+p{
+
+color:#858d9c;
+
+font-size:14px;
+
+line-height:1.6;
+}
+
+input{
+
+width:100%;
+
+height:52px;
+
+border-radius:16px;
+
+border:
+1px solid
+rgba(255,255,255,.1);
+
+background:
+rgba(255,255,255,.045);
+
+color:#fff;
+
+outline:none;
+
+padding:
+0 16px;
+
+margin-top:12px;
+
+font-size:15px;
+}
+
+button{
+
+width:100%;
+
+height:52px;
+
+border:0;
+
+border-radius:16px;
+
+margin-top:14px;
+
+background:#fff;
+
+color:#050505;
+
+font-weight:700;
+
+cursor:pointer;
+}
+
+.error{
+
+display:none;
+
+margin-top:12px;
+
+color:#ff7777;
+
+font-size:13px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="box">
+
+<h1>
+Admin
+</h1>
+
+<p>
+Private SJEMAR administration.
+</p>
+
+<form id="login">
+
+<input
+id="password"
+type="password"
+placeholder="Password"
+autocomplete="current-password"
+required>
+
+<button type="submit">
+Continue
+</button>
+
+<div
+class="error"
+id="error">
+Invalid password.
+</div>
+
+</form>
+
+</div>
+
+<script>
+
+const form =
+document.getElementById("login");
+
+form.addEventListener(
+"submit",
+async e => {
+
+e.preventDefault();
+
+const password =
+document.getElementById(
+"password"
+).value;
+
+const response =
+await fetch(
+"/api/admin/login",
+{
+method:"POST",
+
+headers:{
+"Content-Type":
+"application/json"
+},
+
+body:JSON.stringify({
+password
+})
+}
+);
+
+const data =
+await response.json();
+
+if(data.success){
+
+location.href =
+"/admin/dashboard";
+
+}else{
+
+document.getElementById(
+"error"
+).style.display =
+"block";
+
+}
+
+});
+
+</script>
+
+</body>
+
+</html>
+
+  `);
+});
+
+/* =========================================================
+   ADMIN LOGIN API
+========================================================= */
+
+app.post(
+  "/api/admin/login",
+  loginRateLimit,
+  (req, res) => {
+
+    const password =
+      String(
+        req.body.password || ""
+      );
+
+    if (
+      password !== ADMIN_PASS
+    ) {
+
+      return res
+        .status(401)
+        .json({
+          success:false
+        });
+    }
+
+    const token =
+      createAdminToken();
+
+    res.setHeader(
+      "Set-Cookie",
+      `${ADMIN_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`
+    );
+
+    res.json({
+      success:true
+    });
+  }
+);
+
+/* =========================================================
+   ADMIN LOGOUT
+========================================================= */
+
+app.post(
+  "/api/admin/logout",
+  requireAdmin,
+  (req, res) => {
+
+    res.setHeader(
+      "Set-Cookie",
+      `${ADMIN_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`
+    );
+
+    res.json({
+      success:true
+    });
+  }
+);
+
+/* =========================================================
+   ADMIN DASHBOARD
+========================================================= */
+
+app.get(
+  "/admin/dashboard",
+  requireAdmin,
+  (req, res) => {
+
+    res.send(`
+
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+name="viewport"
+content="width=device-width,initial-scale=1.0">
+
+<title>SJEMAR Admin</title>
+
+<style>
+
+*{
+box-sizing:border-box;
+}
+
+html,body{
+margin:0;
+padding:0;
+}
+
+body{
+
+font-family:
+Inter,
+-apple-system,
+BlinkMacSystemFont,
+"Segoe UI",
+sans-serif;
+
+background:#030507;
+
+color:#fff;
+}
+
+.wrap{
+
+width:
+min(1180px,calc(100% - 28px));
+
+margin:auto;
+
+padding:
+24px 0 70px;
+}
+
+.top{
+
+display:flex;
+
+justify-content:space-between;
+
+align-items:center;
+
+gap:15px;
+
+margin-bottom:24px;
+
+padding:18px 20px;
+
+border-radius:24px;
+
+background:
+rgba(255,255,255,.05);
+
+border:
+1px solid
+rgba(255,255,255,.08);
+
+backdrop-filter:
+blur(28px);
+}
+
+.logo{
+
+font-weight:800;
+
+font-size:18px;
+}
+
+.logout{
+
+border:0;
+
+padding:
+10px 15px;
+
+border-radius:13px;
+
+background:
+rgba(255,255,255,.08);
+
+color:#fff;
+
+cursor:pointer;
+}
+
+.stats{
+
+display:grid;
+
+grid-template-columns:
+repeat(3,1fr);
+
+gap:14px;
+
+margin-bottom:18px;
+}
+
+.stat{
+
+padding:22px;
+
+border-radius:22px;
+
+background:
+rgba(255,255,255,.045);
+
+border:
+1px solid
+rgba(255,255,255,.07);
+}
+
+.stat small{
+
+display:block;
+
+color:#7d8695;
+
+margin-bottom:8px;
+}
+
+.stat strong{
+
+font-size:28px;
+}
+
+.panel{
+
+padding:22px;
+
+border-radius:25px;
+
+background:
+rgba(255,255,255,.045);
+
+border:
+1px solid
+rgba(255,255,255,.07);
+
+margin-bottom:18px;
+}
+
+.toolbar{
+
+display:flex;
+
+gap:10px;
+
+flex-wrap:wrap;
+}
+
+input,textarea,select{
+
+width:100%;
+
+border-radius:14px;
+
+border:
+1px solid
+rgba(255,255,255,.09);
+
+background:
+rgba(0,0,0,.3);
+
+color:#fff;
+
+padding:13px;
+
+outline:none;
+}
+
+.search{
+
+max-width:350px;
+}
+
+button{
+
+border:0;
+
+border-radius:13px;
+
+padding:
+12px 16px;
+
+cursor:pointer;
+
+font-weight:650;
+}
+
+.primary{
+
+background:#fff;
+
+color:#000;
+}
+
+.secondary{
+
+background:
+rgba(255,255,255,.08);
+
+color:#fff;
+}
+
+.danger{
+
+background:
+rgba(255,60,60,.12);
+
+color:#ff8a8a;
+}
+
+.editor{
+
+display:none;
+
+margin-top:18px;
+}
+
+.editor-grid{
+
+display:grid;
+
+grid-template-columns:
+1fr 1fr;
+
+gap:14px;
+}
+
+textarea{
+
+min-height:420px;
+
+font-family:
+ui-monospace,
+SFMono-Regular,
+Menlo,
+monospace;
+
+font-size:13px;
+
+line-height:1.5;
+}
+
+.sites{
+
+display:grid;
+
+gap:12px;
+
+margin-top:18px;
+}
+
+.site{
+
+padding:18px;
+
+border-radius:20px;
+
+background:
+rgba(255,255,255,.035);
+
+border:
+1px solid
+rgba(255,255,255,.065);
+}
+
+.site-head{
+
+display:flex;
+
+justify-content:space-between;
+
+gap:12px;
+
+align-items:flex-start;
+}
+
+.site h3{
+
+margin:0 0 6px;
+
+font-size:17px;
+}
+
+.site small{
+
+color:#7e8796;
+}
+
+.actions{
+
+display:flex;
+
+gap:7px;
+
+flex-wrap:wrap;
+
+margin-top:15px;
+}
+
+.actions button{
+
+font-size:12px;
+
+padding:
+9px 12px;
+}
+
+.badge{
+
+font-size:11px;
+
+padding:
+6px 9px;
+
+border-radius:999px;
+
+background:
+rgba(255,255,255,.06);
+
+color:#aab2c0;
+}
+
+@media(max-width:800px){
+
+.stats{
+
+grid-template-columns:1fr;
+}
+
+.editor-grid{
+
+grid-template-columns:1fr;
+}
+
+.top{
+
+align-items:flex-start;
+}
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="wrap">
+
+<div class="top">
+
+<div class="logo">
+SJEMAR Admin
+</div>
+
+<button
+class="logout"
+onclick="logout()">
+Logout
+</button>
+
+</div>
+
+<div
+class="stats"
+id="stats">
+</div>
+
+<div class="panel">
+
+<div class="toolbar">
+
+<input
+class="search"
+id="search"
+placeholder="Search websites">
+
+<button
+class="primary"
+onclick="newSite()">
+New Website
+</button>
+
+</div>
+
+<div
+class="editor"
+id="editor">
+
+<div class="editor-grid">
+
+<div>
+
+<input
+id="siteTitle"
+placeholder="Website title">
+
+<br><br>
+
+<input
+id="siteSlug"
+placeholder="Custom slug">
+
+<br><br>
+
+<input
+id="siteDescription"
+placeholder="Description">
+
+<br><br>
+
+<input
+id="siteFavicon"
+placeholder="Favicon URL">
+
+<br><br>
+
+<select id="siteStatus">
+
+<option value="published">
+Published
+</option>
+
+<option value="draft">
+Draft
+</option>
+
+</select>
+
+<br><br>
+
+<button
+class="primary"
+onclick="saveSite()">
+Save Website
+</button>
+
+<button
+class="secondary"
+onclick="cancelEditor()">
+Cancel
+</button>
+
+</div>
+
+<div>
+
+<textarea
+id="siteHTML"
+placeholder="Paste your complete HTML here..."></textarea>
+
+</div>
+
+</div>
+
+</div>
+
+<div
+class="sites"
+id="sites">
+</div>
+
+</div>
+
+</div>
+
+<script>
+
+let currentId = null;
+let allSites = [];
+
+const $ = id =>
+document.getElementById(id);
+
+async function api(
+url,
+options = {}
+){
+
+const response =
+await fetch(
+url,
+options
+);
+
+const data =
+await response.json();
+
+if(
+response.status === 401
+){
+
+location.href =
+"/admin";
+
+return null;
+}
+
+return data;
+}
+
+async function load(){
+
+const data =
+await api(
+"/api/admin/sites"
+);
+
+if(!data) return;
+
+allSites =
+data.sites || [];
+
+renderStats(
+allSites
+);
+
+renderSites(
+allSites
+);
+}
+
+function renderStats(sites){
+
+const published =
+sites.filter(
+s => s.status === "published"
+).length;
+
+const drafts =
+sites.filter(
+s => s.status !== "published"
+).length;
+
+$("stats").innerHTML = `
+
+<div class="stat">
+
+<small>Total Websites</small>
+
+<strong>
+${sites.length}
+</strong>
+
+</div>
+
+<div class="stat">
+
+<small>Published</small>
+
+<strong>
+${published}
+</strong>
+
+</div>
+
+<div class="stat">
+
+<small>Drafts</small>
+
+<strong>
+${drafts}
+</strong>
+
+</div>
+
+`;
+
+}
+
+function renderSites(sites){
+
+const query =
+$("search").value
+.toLowerCase()
+.trim();
+
+const filtered =
+sites.filter(site => {
+
+return (
+site.title
+.toLowerCase()
+.includes(query)
+||
+site.slug
+.toLowerCase()
+.includes(query)
+);
+
+});
+
+if(!filtered.length){
+
+$("sites").innerHTML = `
+
+<div class="site">
+
+<small>
+No websites found.
+</small>
+
+</div>
+
+`;
+
+return;
+}
+
+$("sites").innerHTML =
+filtered.map(
+site => {
+
+const safeTitle =
+escapeHTML(site.title);
+
+const safeSlug =
+escapeHTML(site.slug);
+
+const safeDescription =
+escapeHTML(
+site.description || ""
+);
+
+return `
+
+<div class="site">
+
+<div class="site-head">
+
+<div>
+
+<h3>
+${safeTitle}
+</h3>
+
+<small>
+/site/${safeSlug}
+</small>
+
+<br>
+
+<small>
+${safeDescription}
+</small>
+
+</div>
+
+<div class="badge">
+${site.status}
+</div>
+
+</div>
+
+<div class="actions">
+
+<button
+class="secondary"
+onclick="preview('${site.id}')">
+Preview
+</button>
+
+<button
+class="secondary"
+onclick="editSite('${site.id}')">
+Edit
+</button>
+
+<button
+class="secondary"
+onclick="toggleSite('${site.id}')">
+${site.status === "published"
+? "Unpublish"
+: "Publish"}
+</button>
+
+<button
+class="danger"
+onclick="deleteSite('${site.id}')">
+Delete
+</button>
+
+</div>
+
+</div>
+
+`;
+
+}).join("");
+
+}
+
+function escapeHTML(value){
+
+return String(value || "")
+.replace(/&/g,"&amp;")
+.replace(/</g,"&lt;")
+.replace(/>/g,"&gt;")
+.replace(/"/g,"&quot;")
+.replace(/'/g,"&#039;");
+
+}
+
+$("search").addEventListener(
+"input",
+() => renderSites(allSites)
+);
+
+function newSite(){
+
+currentId = null;
+
+$("editor").style.display =
+"block";
+
+$("siteTitle").value =
+"";
+
+$("siteSlug").value =
+"";
+
+$("siteDescription").value =
+"";
+
+$("siteFavicon").value =
+"";
+
+$("siteStatus").value =
+"published";
+
+$("siteHTML").value =
+`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport"
+content="width=device-width,initial-scale=1">
+<title>My Website</title>
+</head>
+<body>
+
+<h1>Hello World</h1>
+
+</body>
+</html>`;
+}
+
+function editSite(id){
+
+const site =
+allSites.find(
+s => s.id === id
+);
+
+if(!site) return;
+
+currentId =
+id;
+
+$("editor").style.display =
+"block";
+
+$("siteTitle").value =
+site.title || "";
+
+$("siteSlug").value =
+site.slug || "";
+
+$("siteDescription").value =
+site.description || "";
+
+$("siteFavicon").value =
+site.favicon || "";
+
+$("siteStatus").value =
+site.status || "published";
+
+$("siteHTML").value =
+site.html || "";
+
+window.scrollTo({
+top:0,
+behavior:"smooth"
+});
+
+}
+
+async function saveSite(){
+
+const payload = {
+
+title:
+$("siteTitle").value.trim(),
+
+slug:
+$("siteSlug").value.trim(),
+
+description:
+$("siteDescription").value.trim(),
+
+favicon:
+$("siteFavicon").value.trim(),
+
+status:
+$("siteStatus").value,
+
+html:
+$("siteHTML").value
+
+};
+
+if(!payload.title){
+
+alert("Website title is required.");
+
+return;
+}
+
+if(!payload.slug){
+
+alert("Website slug is required.");
+
+return;
+}
+
+if(!payload.html){
+
+alert("HTML is required.");
+
+return;
+}
+
+let data;
+
+if(currentId){
+
+data =
+await api(
+"/api/admin/sites/" +
+encodeURIComponent(currentId),
+{
+method:"PUT",
+
+headers:{
+"Content-Type":
+"application/json"
+},
+
+body:
+JSON.stringify(payload)
+}
+);
+
+}else{
+
+data =
+await api(
+"/api/admin/sites",
+{
+method:"POST",
+
+headers:{
+"Content-Type":
+"application/json"
+},
+
+body:
+JSON.stringify(payload)
+}
+);
+
+}
+
+if(
+data &&
+data.success
+){
+
+$("editor").style.display =
+"none";
+
+await load();
+
+}else{
+
+alert(
+data?.error ||
+"Unable to save website."
+);
+
+}
+
+}
+
+function cancelEditor(){
+
+$("editor").style.display =
+"none";
+
+currentId = null;
+}
+
+function preview(id){
+
+const site =
+allSites.find(
+s => s.id === id
+);
+
+if(!site) return;
+
+window.open(
+"/site/" +
+encodeURIComponent(site.slug),
+"_blank"
+);
+
+}
+
+async function toggleSite(id){
+
+const site =
+allSites.find(
+s => s.id === id
+);
+
+if(!site) return;
+
+const newStatus =
+site.status === "published"
+? "draft"
+: "published";
+
+const data =
+await api(
+"/api/admin/sites/" +
+encodeURIComponent(id),
+{
+method:"PUT",
+
+headers:{
+"Content-Type":
+"application/json"
+},
+
+body:JSON.stringify({
+status:newStatus
+})
+}
+);
+
+if(
+data &&
+data.success
+){
+
+load();
+
+}
+
+}
+
+async function deleteSite(id){
+
+if(
+!confirm(
+"Delete this website permanently?"
+)
+){
+
+return;
+}
+
+const data =
+await api(
+"/api/admin/sites/" +
+encodeURIComponent(id),
+{
+method:"DELETE"
+}
+);
+
+if(
+data &&
+data.success
+){
+
+load();
+
+}
+
+}
+
+async function logout(){
+
+await fetch(
+"/api/admin/logout",
+{
+method:"POST"
+}
+);
+
+location.href =
+"/admin";
+
+}
+
+load();
+
+</script>
+
+</body>
+
+</html>
+
+    `);
+  }
+);
+
+/* =========================================================
+   ADMIN LIST SITES
+========================================================= */
+
+app.get(
+  "/api/admin/sites",
+  requireAdmin,
+  (req, res) => {
+
+    const db =
+      readDB();
+
+    /*
+      Do not send unnecessary internal fields.
+    */
+
+    const sites =
+      db.sites.map(site => ({
+        id: site.id,
+        title: site.title,
+        slug: site.slug,
+        description:
+          site.description || "",
+        favicon:
+          site.favicon || "",
+        status:
+          site.status || "draft",
+        html:
+          site.html || "",
+        createdAt:
+          site.createdAt,
+        updatedAt:
+          site.updatedAt
+      }));
+
+    res.json({
+      success:true,
+      sites
+    });
+  }
+);
+
+/* =========================================================
+   CREATE SITE
+========================================================= */
+
+app.post(
+  "/api/admin/sites",
+  requireAdmin,
+  (req, res) => {
+
+    const title =
+      String(
+        req.body.title || ""
+      ).trim();
+
+    let slug =
+      createSlug(
+        req.body.slug
+      );
+
+    const description =
+      String(
+        req.body.description || ""
+      ).trim();
+
+    const favicon =
+      String(
+        req.body.favicon || ""
+      ).trim();
+
+    const status =
+      req.body.status ===
+      "published"
+        ? "published"
+        : "draft";
+
+    const html =
+      String(
+        req.body.html || ""
+      );
+
+    if (
+      !title ||
+      title.length > 120
+    ) {
+
+      return res
+        .status(400)
+        .json({
+          success:false,
+          error:
+            "Invalid website title."
+        });
+    }
+
+    if (!validSlug(slug)) {
+
+      return res
+        .status(400)
+        .json({
+          success:false,
+          error:
+            "Invalid slug."
+        });
+    }
+
+    if (!validateHTML(html)) {
+
+      return res
+        .status(400)
+        .json({
+          success:false,
+          error:
+            "HTML is invalid or too large."
+        });
+    }
+
+    const db =
+      readDB();
+
+    if (
+      db.sites.some(
+        site =>
+          site.slug === slug
+      )
+    ) {
+
+      return res
+        .status(409)
+        .json({
+          success:false,
+          error:
+            "Slug already exists."
+        });
+    }
+
+    const now =
+      new Date().toISOString();
+
+    const site = {
+
+      id:
+        generateId(),
+
+      title,
+
+      slug,
+
+      description,
+
+      favicon,
+
+      status,
+
+      html,
+
+      createdAt: now,
+
+      updatedAt: now
+
+    };
+
+    db.sites.push(site);
+
+    writeDB(db);
+
+    res.json({
+      success:true,
+      site
+    });
+  }
+);
+
+/* =========================================================
+   UPDATE SITE
+========================================================= */
+
+app.put(
+  "/api/admin/sites/:id",
+  requireAdmin,
+  (req, res) => {
+
+    const db =
+      readDB();
+
+    const site =
+      db.sites.find(
+        item =>
+          item.id ===
+          req.params.id
+      );
+
+    if(!site){
+
+      return res
+        .status(404)
+        .json({
+          success:false,
+          error:
+            "Website not found."
+        });
+    }
+
+    if(
+      req.body.title !==
+      undefined
+    ){
+
+      const title =
+        String(
+          req.body.title
+        ).trim();
+
+      if(
+        !title ||
+        title.length > 120
+      ){
+
+        return res
+          .status(400)
+          .json({
+            success:false,
+            error:
+              "Invalid title."
+          });
+      }
+
+      site.title =
+        title;
+    }
+
+    if(
+      req.body.slug !==
+      undefined
+    ){
+
+      const slug =
+        createSlug(
+          req.body.slug
+        );
+
+      if(
+        !validSlug(slug)
+      ){
+
+        return res
+          .status(400)
+          .json({
+            success:false,
+            error:
+              "Invalid slug."
+          });
+      }
+
+      const exists =
+        db.sites.some(
+          item =>
+            item.id !== site.id &&
+            item.slug === slug
+        );
+
+      if(exists){
+
+        return res
+          .status(409)
+          .json({
+            success:false,
+            error:
+              "Slug already exists."
+          });
+      }
+
+      site.slug =
+        slug;
+    }
+
+    if(
+      req.body.description !==
+      undefined
+    ){
+
+      site.description =
+        String(
+          req.body.description
+        ).slice(0,500);
+    }
+
+    if(
+      req.body.favicon !==
+      undefined
+    ){
+
+      site.favicon =
+        String(
+          req.body.favicon
+        ).slice(0,1000);
+    }
+
+    if(
+      req.body.status !==
+      undefined
+    ){
+
+      site.status =
+        req.body.status ===
+        "published"
+          ? "published"
+          : "draft";
+    }
+
+    if(
+      req.body.html !==
+      undefined
+    ){
+
+      const html =
+        String(
+          req.body.html
+        );
+
+      if(
+        !validateHTML(html)
+      ){
+
+        return res
+          .status(400)
+          .json({
+            success:false,
+            error:
+              "HTML is invalid or too large."
+          });
+      }
+
+      site.html =
+        html;
+    }
+
+    site.updatedAt =
+      new Date().toISOString();
+
+    writeDB(db);
+
+    res.json({
+      success:true,
+      site
+    });
+  }
+);
+
+/* =========================================================
+   DELETE SITE
+========================================================= */
+
+app.delete(
+  "/api/admin/sites/:id",
+  requireAdmin,
+  (req, res) => {
+
+    const db =
+      readDB();
+
+    const index =
+      db.sites.findIndex(
+        site =>
+          site.id ===
+          req.params.id
+      );
+
+    if(index === -1){
+
+      return res
+        .status(404)
+        .json({
+          success:false,
+          error:
+            "Website not found."
+        });
+    }
+
+    db.sites.splice(
+      index,
+      1
+    );
+
+    writeDB(db);
+
+    res.json({
+      success:true
+    });
+  }
+);
+
+/* =========================================================
+   PUBLIC SITE
+========================================================= */
+
+app.get(
+  "/site/:slug",
+  (req, res) => {
+
+    const slug =
+      String(
+        req.params.slug || ""
+      ).toLowerCase();
+
+    const db =
+      readDB();
+
+    const site =
+      db.sites.find(
+        item =>
+          item.slug === slug
+      );
+
+    if(!site){
+
+      return res
+        .status(404)
+        .send(`
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport"
+content="width=device-width,initial-scale=1">
+<title>Not Found</title>
+<style>
+body{
+margin:0;
+background:#030507;
+color:#fff;
+font-family:system-ui;
+display:flex;
+align-items:center;
+justify-content:center;
+min-height:100vh;
+text-align:center;
+}
+</style>
+</head>
+<body>
+<div>
+<h1>404</h1>
+<p>Website not found.</p>
+</div>
+</body>
+</html>
+        `);
+    }
+
+    if(
+      site.status !==
+      "published"
+    ){
+
+      return res
+        .status(404)
+        .send(`
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Unavailable</title>
+</head>
+<body>
+<h1>Website unavailable</h1>
+</body>
+</html>
+        `);
+    }
+
+    res.setHeader(
+      "Content-Type",
+      "text/html; charset=utf-8"
+    );
+
+    res.setHeader(
+      "Cache-Control",
+      "no-cache"
+    );
+
+    /*
+      HTML is intentionally returned as
+      user-provided website content.
+    */
+
+    res.send(
+      site.html ||
+      DEFAULT_HTML
+    );
+  }
+);
+
+/* =========================================================
+   DIRECT SLUG ROUTE
+   Optional:
+   /username
+========================================================= */
+
+app.get(
+  "/:slug",
+  (req, res, next) => {
+
+    const reserved = [
+      "admin",
+      "api",
+      "site",
+      "favicon.ico",
+      "robots.txt"
+    ];
+
+    if(
+      reserved.includes(
+        req.params.slug
+      )
+    ){
+
+      return next();
+    }
+
+    const slug =
+      String(
+        req.params.slug || ""
+      ).toLowerCase();
+
+    const db =
+      readDB();
+
+    const site =
+      db.sites.find(
+        item =>
+          item.slug === slug
+      );
+
+    if(
+      !site ||
+      site.status !==
+      "published"
+    ){
+
+      return next();
+    }
+
+    res.setHeader(
+      "Content-Type",
+      "text/html; charset=utf-8"
+    );
+
+    res.send(
+      site.html ||
+      DEFAULT_HTML
+    );
+  }
+);
+
+/* =========================================================
+   ROBOTS
+========================================================= */
+
+app.get(
+  "/robots.txt",
+  (req, res) => {
+
+    res.type("text/plain");
+
+    res.send(
+`User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api/
+`
+    );
+  }
+);
+
+/* =========================================================
+   404
+========================================================= */
+
+app.use(
+  (req, res) => {
+
+    if(
+      req.path.startsWith(
+        "/api/"
+      )
+    ){
+
+      return res
+        .status(404)
+        .json({
+          success:false,
+          error:
+            "API endpoint not found."
+        });
+    }
+
+    res
+      .status(404)
+      .send(`
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+name="viewport"
+content="width=device-width,initial-scale=1">
+
+<title>404</title>
+
+<style>
+
+body{
+
+margin:0;
+
+min-height:100vh;
+
+display:flex;
+
+align-items:center;
+
+justify-content:center;
+
+background:#030507;
+
+color:#fff;
+
+font-family:
+system-ui,
+sans-serif;
+
+text-align:center;
+}
+
+h1{
+font-size:70px;
+margin:0;
+}
+
+p{
+color:#777;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div>
+
+<h1>404</h1>
+
+<p>
+The requested page could not be found.
+</p>
+
+</div>
+
+</body>
+
+</html>
+      `);
+  }
+);
+
+/* =========================================================
+   ERROR HANDLER
+========================================================= */
+
+app.use(
+  (error, req, res, next) => {
+
+    console.error(
+      "Server error:",
+      error
+    );
+
+    if(
+      res.headersSent
+    ){
+
+      return next(error);
+    }
+
+    res
+      .status(500)
+      .json({
+        success:false,
+        error:
+          "Internal server error."
+      });
+  }
+);
+
+/* =========================================================
+   START
+========================================================= */
+
+app.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
+
+    console.log(
+      "SJEMAR Hosting Engine running"
+    );
+
+    console.log(
+      `Port: ${PORT}`
+    );
+
+    console.log(
+      `Admin: /admin`
+    );
+
+  }
+);
     /* Custom OLED Toggle Switch */
     .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
     .switch input { opacity: 0; width: 0; height: 0; }
