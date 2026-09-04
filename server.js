@@ -6,59 +6,14 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Body Parsers
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(express.json({ limit: '100mb' }));
 
-// কনফিগারেশন
 const FIREBASE_DB_URL = "https://sifatby-38886-default-rtdb.firebaseio.com";
 const ADMIN_PASS = "py.py.php";
 
-// ইন-মেমোরি স্টোরেজ (Logs, API Keys, Rate Limiter)
-const auditLogs = [];
-const apiKeys = new Set(['sjemar_live_key_9921a']);
-const rateLimitMap = new Map();
-
 // ------------------------------------------
-// ১. সিকিউরিটি ও হেল্পার মিডলওয়্যার (Rate Limiter)
-// ------------------------------------------
-app.use((req, res, next) => {
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-  const now = Date.now();
-  const windowMs = 60 * 1000; // ১ মিনিট
-  const maxRequests = 200;
-
-  let requestRecord = rateLimitMap.get(ip) || { count: 0, startTime: now };
-  if (now - requestRecord.startTime > windowMs) {
-    requestRecord = { count: 1, startTime: now };
-  } else {
-    requestRecord.count++;
-  }
-  rateLimitMap.set(ip, requestRecord);
-
-  if (requestRecord.count > maxRequests) {
-    return res.status(429).json({ success: false, message: 'Too many requests. Please cool down.' });
-  }
-  next();
-});
-
-// অ্যাক্টিভিটি লগ হেল্পার
-function logActivity(action, details, status = 'SUCCESS') {
-  const logItem = {
-    id: crypto.randomBytes(4).toString('hex'),
-    timestamp: new Date().toLocaleTimeString(),
-    date: new Date().toISOString().split('T')[0],
-    action,
-    details,
-    status
-  };
-  auditLogs.unshift(logItem);
-  if (auditLogs.length > 50) auditLogs.pop(); // শেষ ৫০টি লগ রাখা হবে
-  return logItem;
-}
-
-// ------------------------------------------
-// ২. ফায়ারবেস REST API হেল্পার
+// ১. ফায়ারবেস REST API হেল্পার
 // ------------------------------------------
 function firebaseFetch(path, method = 'GET', data = null) {
   return new Promise((resolve, reject) => {
@@ -90,102 +45,90 @@ function firebaseFetch(path, method = 'GET', data = null) {
 }
 
 // ------------------------------------------
-// ৩. ব্যাকএন্ড API এন্ডপয়েন্টসমূহ
+// ২. ব্যাকএন্ড API ও অ্যাডমিন টাস্ক রাউটস
 // ------------------------------------------
 
-// সিস্টেম হেলথ ও RAM/CPU লাইভ স্ট্যাটাস
-app.get('/api/system/health', (req, res) => {
-  const memory = process.memoryUsage();
-  const totalMem = os.totalmem();
-  const freeMem = os.freemem();
-  const usedMem = totalMem - freeMem;
+// অ্যাডমিন অথেন্টিকেশন
+app.post('/api/admin/login', (req, res) => {
+  const { password } = req.body;
+  if (password === ADMIN_PASS) {
+    const token = crypto.createHash('sha256').update(ADMIN_PASS + Date.now()).digest('hex');
+    return res.json({ success: true, token });
+  }
+  return res.status(401).json({ success: false, message: 'Invalid Admin Password!' });
+});
 
+// সিস্টেম মেট্রিক্স
+app.get('/api/system/metrics', (req, res) => {
+  const mem = process.memoryUsage();
   res.json({
     uptime: Math.floor(process.uptime()),
-    ramHeapUsed: (memory.heapUsed / 1024 / 1024).toFixed(2) + ' MB',
-    systemRamUsage: ((usedMem / totalMem) * 100).toFixed(1),
-    cpuCores: os.cpus().length,
-    nodeVersion: process.version,
-    platform: os.platform() + ' ' + os.arch()
+    heapRam: (mem.heapUsed / 1024 / 1024).toFixed(2) + ' MB',
+    totalRam: (os.totalmem() / 1024 / 1024 / 1024).toFixed(2) + ' GB',
+    cpuCores: os.cpus().length
   });
 });
 
-// অ্যাক্টিভিটি লগ API
-app.get('/api/logs', (req, res) => {
-  res.json({ success: true, logs: auditLogs });
-});
-
-// ফায়ারবেস ডেটা রিড
-app.get('/api/db/read', async (req, res) => {
+// টাস্ক তৈরি (Admin Task)
+app.post('/api/admin/tasks/create', async (req, res) => {
   try {
-    const node = req.query.node || '';
-    const result = await firebaseFetch(node, 'GET');
-    logActivity('DB_READ', `Read node: /${node}`);
-    res.json({ success: true, data: result.data });
-  } catch (error) {
-    logActivity('DB_READ_ERR', error.message, 'FAILED');
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// ফায়ারবেস ডেটা রাইট
-app.post('/api/db/write', async (req, res) => {
-  try {
-    const { node, payload } = req.body;
-    if (!node) return res.status(400).json({ success: false, message: 'Node path is required' });
-
-    let parsedData = payload;
-    if (typeof payload === 'string') {
-      try { parsedData = JSON.parse(payload); } catch (e) {}
-    }
-
-    const result = await firebaseFetch(node, 'PUT', parsedData);
-    logActivity('DB_WRITE', `Updated node: /${node}`);
-    res.json({ success: true, data: result.data });
-  } catch (error) {
-    logActivity('DB_WRITE_ERR', error.message, 'FAILED');
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// ফায়ারবেস ব্যাকআপ (JSON Export)
-app.get('/api/db/export', async (req, res) => {
-  try {
-    const result = await firebaseFetch('/', 'GET');
-    logActivity('BACKUP_EXPORT', 'Full Database Exported');
-    res.setHeader('Content-disposition', 'attachment; filename=sjemar_backup_' + Date.now() + '.json');
-    res.setHeader('Content-type', 'application/json');
-    res.send(JSON.stringify(result.data, null, 2));
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// ফায়ারবেস রিস্টোর (JSON Import)
-app.post('/api/db/import', async (req, res) => {
-  try {
-    const { jsonData } = req.body;
-    if (!jsonData) return res.status(400).json({ success: false, message: 'JSON data missing' });
+    const { title, reward, description, type } = req.body;
+    const taskId = 'task_' + Date.now();
+    const taskData = { id: taskId, title, reward, description, type, createdAt: new Date().toISOString() };
     
-    await firebaseFetch('/', 'PUT', jsonData);
-    logActivity('BACKUP_RESTORE', 'Full Database Restored from JSON');
-    res.json({ success: true, message: 'Database Restored Successfully!' });
-  } catch (error) {
-    logActivity('RESTORE_ERR', error.message, 'FAILED');
-    res.status(500).json({ success: false, message: error.message });
+    await firebaseFetch(`/tasks/${taskId}`, 'PUT', taskData);
+    res.json({ success: true, task: taskData });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// API Key জেনারেটর
-app.post('/api/keys/generate', (req, res) => {
-  const newKey = 'sjemar_live_' + crypto.randomBytes(8).toString('hex');
-  apiKeys.add(newKey);
-  logActivity('API_KEY_GEN', `New key: ${newKey.substring(0, 15)}...`);
-  res.json({ success: true, key: newKey });
+// টাস্ক লিস্ট ফেচ
+app.get('/api/tasks/list', async (req, res) => {
+  try {
+    const result = await firebaseFetch('/tasks', 'GET');
+    const tasks = result.data ? Object.values(result.data) : [];
+    res.json({ success: true, tasks });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// টাস্ক ডিলিট (Admin Task)
+app.post('/api/admin/tasks/delete', async (req, res) => {
+  try {
+    const { taskId } = req.body;
+    await firebaseFetch(`/tasks/${taskId}`, 'DELETE');
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ইউজার টাস্ক সাবমিট
+app.post('/api/user/task/submit', async (req, res) => {
+  try {
+    const { taskId, username, proof } = req.body;
+    const submissionId = 'sub_' + Date.now();
+    const data = { submissionId, taskId, username, proof, status: 'PENDING', time: new Date().toLocaleTimeString() };
+    
+    await firebaseFetch(`/submissions/${submissionId}`, 'PUT', data);
+    res.json({ success: true, message: 'Submission sent for review' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ফায়ারবেস ব্যাকআপ এক্সপোর্ট
+app.get('/api/admin/export', async (req, res) => {
+  const result = await firebaseFetch('/', 'GET');
+  res.setHeader('Content-disposition', 'attachment; filename=database_backup.json');
+  res.setHeader('Content-type', 'application/json');
+  res.send(JSON.stringify(result.data, null, 2));
 });
 
 // ------------------------------------------
-// ৪. ফ্রন্টএন্ড UI (OLED UI + 15 Features)
+// ৩. ইউজার ইন্টারফেস (User App Page: '/')
 // ------------------------------------------
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -194,379 +137,474 @@ app.get('/', (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>SJEMAR Cloud Engine Pro</title>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <title>SJEMAR Cloud Client</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg: #000000;
-      --card-bg: rgba(12, 12, 16, 0.9);
+      --card-bg: rgba(14, 14, 18, 0.85);
       --card-border: rgba(255, 255, 255, 0.08);
       --accent: #2563EB;
       --accent-glow: rgba(37, 99, 235, 0.35);
       --text: #FFFFFF;
       --text-muted: #71717A;
       --text-sub: #A1A1AA;
-      --border-subtle: rgba(255, 255, 255, 0.05);
-      --danger: #EF4444;
       --success: #10B981;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', -apple-system, sans-serif; -webkit-tap-highlight-color: transparent; }
-    body { background: #000000; color: var(--text); min-height: 100vh; padding-bottom: 90px; overflow-x: hidden; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
+    body { background: #000000; color: var(--text); min-height: 100vh; padding-bottom: 90px; }
 
-    /* Sticky Header */
-    .header { position: sticky; top: 0; z-index: 50; backdrop-filter: blur(25px); -webkit-backdrop-filter: blur(25px); background: rgba(0, 0, 0, 0.85); border-bottom: 1px solid var(--card-border); padding: 12px 18px; display: flex; justify-content: space-between; align-items: center; }
-    .brand-wrap { display: flex; align-items: center; gap: 10px; }
-    .brand-logo { width: 32px; height: 32px; border-radius: 10px; background: linear-gradient(135deg, #2563EB, #7C3AED); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px var(--accent-glow); font-size: 16px; font-weight: 800; }
+    /* Pure SVG Common Classes */
+    .icon { width: 20px; height: 20px; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; display: inline-block; vertical-align: middle; }
+    .icon-sm { width: 16px; height: 16px; }
+
+    /* Header */
+    .header { position: sticky; top: 0; z-index: 40; backdrop-filter: blur(25px); background: rgba(0, 0, 0, 0.9); border-bottom: 1px solid var(--card-border); padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; }
+    .brand-wrap { display: flex; align-items: center; gap: 12px; }
+    .brand-logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, #2563EB, #7C3AED); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px var(--accent-glow); }
+    .brand-logo svg { stroke: #fff; width: 18px; height: 18px; }
     .brand-title { font-size: 16px; font-weight: 800; letter-spacing: -0.3px; }
-    .cmd-badge { background: #111; border: 1px solid var(--card-border); padding: 4px 8px; border-radius: 8px; font-size: 11px; color: var(--text-sub); cursor: pointer; display: flex; align-items: center; gap: 5px; }
 
-    .container { max-width: 500px; margin: 0 auto; padding: 16px 14px; }
+    /* 3-Line Hamburger Menu Button */
+    .hamburger-btn { background: rgba(255,255,255,0.06); border: 1px solid var(--card-border); padding: 8px; border-radius: 10px; cursor: pointer; color: #fff; display: flex; align-items: center; justify-content: center; }
+
+    /* Side Drawer Menu */
+    .drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(6px); z-index: 90; display: none; }
+    .drawer-backdrop.show { display: block; }
+    .drawer { position: fixed; top: 0; right: -280px; width: 280px; height: 100%; background: #08080A; border-left: 1px solid var(--card-border); z-index: 100; transition: 0.3s cubic-bezier(0.16, 1, 0.3, 1); padding: 24px 18px; display: flex; flex-direction: column; justify-content: space-between; }
+    .drawer.open { right: 0; }
+    .drawer-link { display: flex; align-items: center; gap: 12px; padding: 12px 14px; color: var(--text-sub); text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 14px; margin-bottom: 8px; transition: 0.2s; }
+    .drawer-link:hover, .drawer-link.active { background: rgba(255,255,255,0.06); color: #fff; }
+
+    .container { max-width: 480px; margin: 0 auto; padding: 18px 14px; }
     
-    /* Metrics Grid */
-    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
-    .stat-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; padding: 14px; position: relative; overflow: hidden; }
-    .stat-title { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }
-    .stat-val { font-size: 18px; font-weight: 800; margin-top: 4px; color: #fff; font-family: 'JetBrains Mono', monospace; }
-    .stat-glow { position: absolute; top: -10px; right: -10px; width: 40px; height: 40px; background: var(--accent); filter: blur(20px); opacity: 0.15; }
+    /* Cards */
+    .glass-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 20px; padding: 18px; margin-bottom: 14px; box-shadow: 0 15px 35px rgba(0,0,0,0.9); }
+    .card-head { font-size: 15px; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
-    /* Glass Cards */
-    .glass-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 20px; padding: 18px; margin-bottom: 16px; }
-    .card-head { font-size: 15px; font-weight: 700; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
-
-    /* Inputs & Buttons */
-    .form-group { margin-bottom: 12px; }
-    .form-label { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px; display: block; }
-    .glass-input, .glass-textarea { width: 100%; background: #070709; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 12px 14px; color: #FFFFFF; font-size: 13px; outline: none; transition: 0.2s; }
+    /* Form Elements */
+    .glass-input, .glass-textarea { width: 100%; background: #050507; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 12px 14px; color: #FFFFFF; font-size: 13px; outline: none; margin-bottom: 10px; }
     .glass-input:focus, .glass-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
-    .glass-textarea { font-family: 'JetBrains Mono', monospace; font-size: 12px; min-height: 90px; resize: vertical; }
 
-    .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 12px 16px; border-radius: 12px; font-size: 13px; font-weight: 700; cursor: pointer; border: none; transition: 0.2s; gap: 8px; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 12px 16px; border-radius: 12px; font-size: 13px; font-weight: 700; cursor: pointer; border: none; gap: 8px; transition: 0.2s; }
     .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 4px 15px var(--accent-glow); }
     .btn-primary:active { transform: scale(0.98); }
-    .btn-secondary { background: rgba(255,255,255,0.06); color: #fff; border: 1px solid var(--card-border); }
-    .btn-danger { background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
 
-    /* Drag Drop Area */
-    .dropzone { border: 2px dashed rgba(255,255,255,0.15); border-radius: 14px; padding: 20px; text-align: center; cursor: pointer; transition: 0.2s; background: #050505; }
-    .dropzone.dragover { border-color: var(--accent); background: rgba(37,99,235,0.05); }
+    /* Task Item Card */
+    .task-card { background: #050508; border: 1px solid var(--card-border); border-radius: 16px; padding: 14px; margin-bottom: 10px; }
+    .task-title { font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+    .task-reward { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; color: var(--success); }
 
-    /* Activity Log List */
-    .log-list { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-    .log-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: rgba(255,255,255,0.02); border-radius: 10px; font-size: 12px; border: 1px solid var(--border-subtle); }
-    .log-action { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: #60A5FA; }
-
-    /* Bottom Floating Nav */
-    .bottom-nav { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); width: calc(100% - 28px); max-width: 460px; background: rgba(15, 15, 20, 0.85); backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px); border: 1px solid var(--card-border); border-radius: 20px; display: flex; padding: 6px; z-index: 40; box-shadow: 0 10px 30px rgba(0,0,0,0.8); }
-    .nav-btn { flex: 1; padding: 10px 0; background: transparent; border: none; color: var(--text-muted); font-size: 11px; font-weight: 600; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; border-radius: 14px; transition: 0.2s; }
-    .nav-btn.active { color: #FFFFFF; background: rgba(255,255,255,0.08); }
-
-    /* Tab Panes */
-    .tab-pane { display: none; }
-    .tab-pane.active { display: block; animation: slideIn 0.2s ease-out; }
-    @keyframes slideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-
-    /* Toast Notification */
-    #toast-container { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 100; pointer-events: none; }
-    .toast { background: rgba(20, 20, 25, 0.95); backdrop-filter: blur(20px); border: 1px solid var(--card-border); color: #fff; padding: 10px 18px; border-radius: 30px; font-size: 12px; font-weight: 600; box-shadow: 0 10px 25px rgba(0,0,0,0.8); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; animation: toastIn 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
-    @keyframes toastIn { from { opacity: 0; transform: translateY(-15px); } to { opacity: 1; transform: translateY(0); } }
-
-    /* Command Palette Modal */
-    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(10px); z-index: 90; display: none; align-items: flex-start; justify-content: center; padding-top: 80px; }
-    .modal-backdrop.show { display: flex; }
-    .cmd-box { width: 90%; max-width: 440px; background: #0E0E12; border: 1px solid var(--card-border); border-radius: 18px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.9); }
+    /* Toast */
+    #toast-box { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 120; pointer-events: none; }
+    .toast { background: #121218; border: 1px solid var(--card-border); color: #fff; padding: 10px 18px; border-radius: 30px; font-size: 12px; font-weight: 600; box-shadow: 0 10px 25px rgba(0,0,0,0.8); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
   </style>
 </head>
 <body>
 
-  <!-- Toast Notification Container -->
-  <div id="toast-container"></div>
+  <div id="toast-box"></div>
+
+  <!-- Side Drawer Menu -->
+  <div class="drawer-backdrop" id="drawerBackdrop" onclick="toggleDrawer()"></div>
+  <div class="drawer" id="drawerMenu">
+    <div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
+        <span style="font-size:16px; font-weight:800;">Navigation</span>
+        <button class="hamburger-btn" onclick="toggleDrawer()">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <a href="/" class="drawer-link active">
+        <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        User Portal
+      </a>
+      <a href="/admin" class="drawer-link">
+        <svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        Admin Panel
+      </a>
+    </div>
+    <div style="font-size:11px; color:var(--text-muted); text-align:center;">SJEMAR Engine v2.0</div>
+  </div>
+
+  <!-- Header with SVG Hamburger Button -->
+  <header class="header">
+    <div class="brand-wrap">
+      <div class="brand-logo">
+        <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      </div>
+      <div>
+        <div class="brand-title">SJEMAR Client</div>
+      </div>
+    </div>
+    <!-- 3-Line Nav Button -->
+    <button class="hamburger-btn" onclick="toggleDrawer()">
+      <svg class="icon" viewBox="0 0 24 24">
+        <line x1="3" y1="6" x2="21" y2="6"/>
+        <line x1="3" y1="12" x2="21" y2="12"/>
+        <line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+    </button>
+  </header>
+
+  <div class="container">
+
+    <!-- Active Tasks Stream -->
+    <div class="glass-card">
+      <div class="card-head">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          <span>Available Tasks</span>
+        </div>
+        <button class="btn" style="width:auto; padding:4px 10px; font-size:11px; background:rgba(255,255,255,0.06);" onclick="loadUserTasks()">
+          <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+      </div>
+      <div id="tasks-container">
+        <div style="text-align:center; font-size:12px; color:var(--text-muted); padding:16px;">Loading tasks...</div>
+      </div>
+    </div>
+
+    <!-- Submit Task Proof -->
+    <div class="glass-card">
+      <div class="card-head">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          <span>Submit Task Proof</span>
+        </div>
+      </div>
+      <input type="text" id="sub-task-id" class="glass-input" placeholder="Task ID (e.g. task_1700...)">
+      <input type="text" id="sub-username" class="glass-input" placeholder="Your Username">
+      <textarea id="sub-proof" class="glass-textarea" placeholder="Enter proof / link / details..."></textarea>
+      <button class="btn btn-primary" onclick="submitTaskProof()">
+        <svg class="icon icon-sm" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        Submit Task
+      </button>
+    </div>
+
+  </div>
+
+  <script>
+    function toggleDrawer() {
+      document.getElementById('drawerBackdrop').classList.toggle('show');
+      document.getElementById('drawerMenu').classList.toggle('open');
+    }
+
+    function showToast(text) {
+      if (navigator.vibrate) navigator.vibrate([25]);
+      const box = document.getElementById('toast-box');
+      const t = document.createElement('div');
+      t.className = 'toast';
+      t.innerHTML = text;
+      box.appendChild(t);
+      setTimeout(() => t.remove(), 2500);
+    }
+
+    async function loadUserTasks() {
+      try {
+        const res = await fetch('/api/tasks/list');
+        const data = await res.json();
+        const container = document.getElementById('tasks-container');
+        if (!data.tasks || data.tasks.length === 0) {
+          container.innerHTML = '<div style="text-align:center; font-size:12px; color:var(--text-muted); padding:16px;">No tasks available right now.</div>';
+          return;
+        }
+        container.innerHTML = data.tasks.map(t => \`
+          <div class="task-card">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div class="task-title">\${t.title}</div>
+              <div class="task-reward">\${t.reward || 'Free'}</div>
+            </div>
+            <div style="font-size:11px; color:var(--text-sub); margin:4px 0;">\${t.description || ''}</div>
+            <div style="font-size:10px; color:var(--text-muted); font-family:'JetBrains Mono',monospace;">ID: \${t.id}</div>
+          </div>
+        \`).join('');
+      } catch (err) {
+        showToast('Failed to load tasks');
+      }
+    }
+
+    async function submitTaskProof() {
+      const taskId = document.getElementById('sub-task-id').value;
+      const username = document.getElementById('sub-username').value;
+      const proof = document.getElementById('sub-proof').value;
+
+      if (!taskId || !username || !proof) return showToast('Please fill all fields');
+
+      const res = await fetch('/api/user/task/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId, username, proof })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Task Submitted Successfully!');
+        document.getElementById('sub-task-id').value = '';
+        document.getElementById('sub-username').value = '';
+        document.getElementById('sub-proof').value = '';
+      }
+    }
+
+    loadUserTasks();
+  </script>
+</body>
+</html>`);
+});
+
+// ------------------------------------------
+// ৪. অ্যাডমিন ড্যাশবোর্ড (Admin HQ: '/admin')
+// ------------------------------------------
+app.get('/admin', (req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>SJEMAR Admin HQ</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #000000;
+      --card-bg: rgba(14, 14, 18, 0.9);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --accent: #7C3AED;
+      --accent-glow: rgba(124, 58, 237, 0.35);
+      --text: #FFFFFF;
+      --text-muted: #71717A;
+      --text-sub: #A1A1AA;
+      --danger: #EF4444;
+      --success: #10B981;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
+    body { background: #000000; color: var(--text); min-height: 100vh; padding-bottom: 90px; }
+
+    .icon { width: 18px; height: 18px; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; display: inline-block; vertical-align: middle; }
+    .icon-sm { width: 14px; height: 14px; }
+
+    .header { position: sticky; top: 0; z-index: 40; backdrop-filter: blur(25px); background: rgba(0, 0, 0, 0.9); border-bottom: 1px solid var(--card-border); padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; }
+    .brand-wrap { display: flex; align-items: center; gap: 10px; }
+    .brand-logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, #7C3AED, #2563EB); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px var(--accent-glow); }
+    .brand-logo svg { stroke: #fff; width: 18px; height: 18px; }
+
+    .hamburger-btn { background: rgba(255,255,255,0.06); border: 1px solid var(--card-border); padding: 8px; border-radius: 10px; cursor: pointer; color: #fff; }
+
+    .container { max-width: 500px; margin: 0 auto; padding: 18px 14px; }
+    .glass-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 20px; padding: 18px; margin-bottom: 14px; }
+    .card-head { font-size: 15px; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; }
+
+    .glass-input, .glass-textarea { width: 100%; background: #050507; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 12px 14px; color: #FFFFFF; font-size: 13px; outline: none; margin-bottom: 10px; }
+    
+    .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 12px 16px; border-radius: 12px; font-size: 13px; font-weight: 700; cursor: pointer; border: none; gap: 8px; }
+    .btn-accent { background: var(--accent); color: #fff; box-shadow: 0 4px 15px var(--accent-glow); }
+    .btn-danger { background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
+
+    /* Stats */
+    .stat-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+    .stat-box { background: #060608; border: 1px solid var(--card-border); border-radius: 14px; padding: 12px; }
+    .stat-num { font-size: 16px; font-weight: 800; font-family: 'JetBrains Mono', monospace; color: #fff; margin-top: 4px; }
+
+    /* Drawer */
+    .drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(6px); z-index: 90; display: none; }
+    .drawer-backdrop.show { display: block; }
+    .drawer { position: fixed; top: 0; right: -280px; width: 280px; height: 100%; background: #08080A; border-left: 1px solid var(--card-border); z-index: 100; transition: 0.3s cubic-bezier(0.16, 1, 0.3, 1); padding: 24px 18px; }
+    .drawer.open { right: 0; }
+    .drawer-link { display: flex; align-items: center; gap: 12px; padding: 12px 14px; color: var(--text-sub); text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+    .drawer-link.active { background: rgba(255,255,255,0.06); color: #fff; }
+
+    /* Auth lock screen */
+    #auth-screen { position: fixed; inset: 0; background: #000; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  </style>
+</head>
+<body>
+
+  <!-- Admin Login Auth Modal -->
+  <div id="auth-screen">
+    <div class="glass-card" style="width:100%; max-width:360px;">
+      <div style="text-align:center; margin-bottom:18px;">
+        <div class="brand-logo" style="margin:0 auto 12px;">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <div style="font-size:16px; font-weight:800;">Admin HQ Access</div>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Enter Master Password</div>
+      </div>
+      <input type="password" id="admin-pass-input" class="glass-input" placeholder="Password (py.py.php)">
+      <button class="btn btn-accent" onclick="authenticateAdmin()">
+        <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+        Unlock Panel
+      </button>
+    </div>
+  </div>
+
+  <!-- Drawer Menu -->
+  <div class="drawer-backdrop" id="adminBackdrop" onclick="toggleAdminDrawer()"></div>
+  <div class="drawer" id="adminDrawer">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
+      <span style="font-size:16px; font-weight:800;">Admin Navigation</span>
+      <button class="hamburger-btn" onclick="toggleAdminDrawer()">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <a href="/" class="drawer-link">
+      <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      User Portal
+    </a>
+    <a href="/admin" class="drawer-link active">
+      <svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      Admin Panel
+    </a>
+    <a href="/api/admin/export" class="drawer-link" style="margin-top:20px; color:#60A5FA;">
+      <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Export DB Backup
+    </a>
+  </div>
 
   <!-- Header -->
   <header class="header">
     <div class="brand-wrap">
-      <div class="brand-logo">⚡</div>
+      <div class="brand-logo">
+        <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      </div>
       <div>
-        <div class="brand-title">SJEMAR Cloud</div>
+        <div class="brand-title">Admin Task Hub</div>
       </div>
     </div>
-    <div class="cmd-badge" onclick="toggleCmdPalette()">
-      <span>Cmd + K</span>
-    </div>
+    <button class="hamburger-btn" onclick="toggleAdminDrawer()">
+      <svg class="icon" viewBox="0 0 24 24">
+        <line x1="3" y1="6" x2="21" y2="6"/>
+        <line x1="3" y1="12" x2="21" y2="12"/>
+        <line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+    </button>
   </header>
 
   <div class="container">
     
-    <!-- 1. ড্যাশবোর্ড ট্যাব -->
-    <div id="tab-overview" class="tab-pane active">
-      <!-- Live Server Metrics -->
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-glow"></div>
-          <div class="stat-title">Heap RAM</div>
-          <div class="stat-val" id="stat-ram">0.00 MB</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-glow"></div>
-          <div class="stat-title">System Load</div>
-          <div class="stat-val" id="stat-sys-ram">0%</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-glow"></div>
-          <div class="stat-title">Server Uptime</div>
-          <div class="stat-val" id="stat-uptime">0s</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-glow"></div>
-          <div class="stat-title">Ping Latency</div>
-          <div class="stat-val" id="stat-ping">-- ms</div>
-        </div>
+    <!-- Live Server Metrics -->
+    <div class="stat-row">
+      <div class="stat-box">
+        <div style="font-size:11px; color:var(--text-muted);">RAM Heap</div>
+        <div class="stat-num" id="adm-ram">0 MB</div>
       </div>
-
-      <!-- Quick Database Explorer -->
-      <div class="glass-card">
-        <div class="card-head">
-          <span>⚡ Firebase Realtime Engine</span>
-          <button class="btn btn-secondary" style="width:auto; padding:4px 10px; font-size:10px;" onclick="formatJsonInput()">Format JSON</button>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Path Node</label>
-          <input type="text" id="db-node" class="glass-input" value="users" placeholder="e.g. users, config/app">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Payload (JSON / String)</label>
-          <textarea id="db-payload" class="glass-textarea" placeholder='{"status": "active", "tier": "ultra"}'></textarea>
-        </div>
-        <div style="display:flex; gap:8px;">
-          <button class="btn btn-secondary" onclick="executeDbRead()">Read Node</button>
-          <button class="btn btn-primary" onclick="executeDbWrite()">Save / Update</button>
-        </div>
-      </div>
-
-      <!-- Response Viewer -->
-      <div class="glass-card">
-        <div class="card-head">
-          <span>Console Output</span>
-          <button class="btn btn-secondary" style="width:auto; padding:4px 8px; font-size:10px;" onclick="copyOutput()">Copy</button>
-        </div>
-        <pre id="output-box" style="font-family:'JetBrains Mono', monospace; font-size:11px; color:#A1A1AA; background:#050505; padding:12px; border-radius:12px; max-height:160px; overflow:auto;">Ready for operations...</pre>
+      <div class="stat-box">
+        <div style="font-size:11px; color:var(--text-muted);">Uptime</div>
+        <div class="stat-num" id="adm-uptime">0s</div>
       </div>
     </div>
 
-    <!-- 2. ব্যাকআপ ও রিস্টোর ট্যাব -->
-    <div id="tab-backup" class="tab-pane">
-      <div class="glass-card">
-        <div class="card-head">📦 Database Export</div>
-        <p style="font-size:12px; color:var(--text-sub); margin-bottom:12px;">এক ক্লিকে সম্পূর্ণ ফায়ারবেস ডেটাবেজ JSON ফরম্যাটে ডাউনলোড করুন।</p>
-        <button class="btn btn-primary" onclick="window.location.href='/api/db/export'">Download Full Backup (.json)</button>
-      </div>
-
-      <div class="glass-card">
-        <div class="card-head">📥 1-Click Restore (JSON Dropzone)</div>
-        <div class="dropzone" id="dropzone" onclick="document.getElementById('file-input').click()">
-          <p style="font-size:12px; color:var(--text-sub);">JSON ফাইল টেনে এনে ছাড়ুন বা ক্লিক করুন</p>
-          <input type="file" id="file-input" accept=".json" style="display:none;" onchange="handleFileRestore(event)">
+    <!-- Create New Task Form -->
+    <div class="glass-card">
+      <div class="card-head">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span>Create User Task</span>
         </div>
       </div>
+      <input type="text" id="task-title" class="glass-input" placeholder="Task Title (e.g. Subscribe Channel)">
+      <input type="text" id="task-reward" class="glass-input" placeholder="Reward / Points (e.g. 50 BDT / $0.50)">
+      <textarea id="task-desc" class="glass-textarea" placeholder="Detailed instruction for users..."></textarea>
+      <button class="btn btn-accent" onclick="publishAdminTask()">
+        <svg class="icon icon-sm" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        Publish Task to Database
+      </button>
     </div>
 
-    <!-- 3. অ্যাক্টিভিটি লগ ও API কী ট্যাব -->
-    <div id="tab-logs" class="tab-pane">
-      <div class="glass-card">
-        <div class="card-head">
-          <span>🔑 API Key Generator</span>
-          <button class="btn btn-primary" style="width:auto; padding:6px 12px; font-size:11px;" onclick="generateApiKey()">+ Generate</button>
-        </div>
-        <div id="api-key-display" style="font-family:'JetBrains Mono', monospace; font-size:11px; padding:10px; background:#070709; border-radius:10px; border:1px dashed rgba(255,255,255,0.15); word-break:break-all;">Click generate to create secret key</div>
+    <!-- Active Tasks Manager -->
+    <div class="glass-card">
+      <div class="card-head">
+        <span>Manage Published Tasks</span>
+        <button class="btn" style="width:auto; padding:4px 8px; font-size:11px; background:rgba(255,255,255,0.06);" onclick="fetchAdminTasks()">Refresh</button>
       </div>
-
-      <div class="glass-card">
-        <div class="card-head">
-          <span>📜 Live Activity Log</span>
-          <button class="btn btn-secondary" style="width:auto; padding:4px 8px; font-size:10px;" onclick="fetchLogs()">Refresh</button>
-        </div>
-        <div class="log-list" id="log-container">
-          <div style="font-size:11px; color:var(--text-muted); text-align:center;">No logs yet</div>
-        </div>
-      </div>
+      <div id="admin-task-list">Loading tasks...</div>
     </div>
 
   </div>
-
-  <!-- Command Palette Modal -->
-  <div class="modal-backdrop" id="cmd-modal" onclick="if(event.target===this) toggleCmdPalette()">
-    <div class="cmd-box">
-      <input type="text" id="cmd-input" class="glass-input" style="border:none; border-bottom:1px solid var(--card-border); border-radius:0; padding:16px;" placeholder="Type a command (e.g. read, backup, logs)..." onkeyup="handleCmdInput(event)">
-      <div style="padding:10px; display:flex; flex-direction:column; gap:4px; font-size:12px;">
-        <div style="padding:8px 10px; cursor:pointer;" onclick="switchTab('tab-overview'); toggleCmdPalette();">📊 Open Dashboard</div>
-        <div style="padding:8px 10px; cursor:pointer;" onclick="switchTab('tab-backup'); toggleCmdPalette();">📦 Export / Import Backup</div>
-        <div style="padding:8px 10px; cursor:pointer;" onclick="switchTab('tab-logs'); toggleCmdPalette();">📜 View Audit Trail</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Bottom Navigation -->
-  <nav class="bottom-nav">
-    <button class="nav-btn active" onclick="switchTab('tab-overview', this)">
-      <span>⚡</span>
-      <span>Engine</span>
-    </button>
-    <button class="nav-btn" onclick="switchTab('tab-backup', this)">
-      <span>📦</span>
-      <span>Backup</span>
-    </button>
-    <button class="nav-btn" onclick="switchTab('tab-logs', this)">
-      <span>📜</span>
-      <span>Audit & API</span>
-    </button>
-  </nav>
 
   <script>
-    // ১. টোস্ট নোটিফিকেশন এবং হ্যাপটিক ভাইব্রেশন
-    function showToast(text, isError = false) {
-      if (navigator.vibrate) navigator.vibrate([25]);
-      const container = document.getElementById('toast-container');
-      const toast = document.createElement('div');
-      toast.className = 'toast';
-      toast.style.borderColor = isError ? 'rgba(239, 68, 68, 0.4)' : 'rgba(37, 99, 235, 0.4)';
-      toast.innerHTML = (isError ? '⚠️ ' : '✅ ') + text;
-      container.appendChild(toast);
-      setTimeout(() => toast.remove(), 2500);
+    function toggleAdminDrawer() {
+      document.getElementById('adminBackdrop').classList.toggle('show');
+      document.getElementById('adminDrawer').classList.toggle('open');
     }
 
-    // ২. ট্যাব সুইচিং
-    function switchTab(tabId, el) {
-      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-      document.getElementById(tabId).classList.add('active');
-      if (el) el.classList.add('active');
+    async function authenticateAdmin() {
+      const password = document.getElementById('admin-pass-input').value;
+      const res = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password })
+      });
+      const data = await res.json();
+      if (data.success) {
+        document.getElementById('auth-screen').style.display = 'none';
+        initAdminMetrics();
+        fetchAdminTasks();
+      } else {
+        alert('Wrong Password!');
+      }
     }
 
-    // ৩. লাইভ সার্ভার হেলথ পোকার
-    async function updateSystemMetrics() {
-      const start = Date.now();
+    async function initAdminMetrics() {
       try {
-        const res = await fetch('/api/system/health');
+        const res = await fetch('/api/system/metrics');
         const data = await res.json();
-        const latency = Date.now() - start;
-
-        document.getElementById('stat-ram').innerText = data.ramHeapUsed;
-        document.getElementById('stat-sys-ram').innerText = data.systemRamUsage + '%';
-        document.getElementById('stat-uptime').innerText = data.uptime + 's';
-        document.getElementById('stat-ping').innerText = latency + ' ms';
+        document.getElementById('adm-ram').innerText = data.heapRam;
+        document.getElementById('adm-uptime').innerText = data.uptime + 's';
       } catch (e) {}
-    }
-    setInterval(updateSystemMetrics, 2500);
-    updateSystemMetrics();
-
-    // ৪. ডেটাবেজ রিড/রাইট
-    async function executeDbRead() {
-      const node = document.getElementById('db-node').value;
-      try {
-        const res = await fetch('/api/db/read?node=' + encodeURIComponent(node));
-        const json = await res.json();
-        document.getElementById('output-box').innerText = JSON.stringify(json.data, null, 2);
-        showToast('Node read successfully');
-      } catch (err) {
-        showToast(err.message, true);
-      }
+      setTimeout(initAdminMetrics, 3000);
     }
 
-    async function executeDbWrite() {
-      const node = document.getElementById('db-node').value;
-      const payload = document.getElementById('db-payload').value;
-      try {
-        const res = await fetch('/api/db/write', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ node, payload })
-        });
-        const json = await res.json();
-        document.getElementById('output-box').innerText = JSON.stringify(json.data, null, 2);
-        showToast('Node updated successfully');
-      } catch (err) {
-        showToast(err.message, true);
-      }
-    }
+    async function publishAdminTask() {
+      const title = document.getElementById('task-title').value;
+      const reward = document.getElementById('task-reward').value;
+      const description = document.getElementById('task-desc').value;
 
-    // ৫. JSON ফরম্যাটিং হেল্পার
-    function formatJsonInput() {
-      const field = document.getElementById('db-payload');
-      try {
-        const parsed = JSON.parse(field.value);
-        field.value = JSON.stringify(parsed, null, 2);
-        showToast('JSON Formatted');
-      } catch (e) {
-        showToast('Invalid JSON structure', true);
-      }
-    }
+      if (!title) return alert('Task Title is required');
 
-    function copyOutput() {
-      navigator.clipboard.writeText(document.getElementById('output-box').innerText);
-      showToast('Copied to clipboard');
-    }
-
-    // ৬. ড্র্যাগ অ্যান্ড ড্রপ রিস্টোর
-    async function handleFileRestore(event) {
-      const file = event.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = async function(e) {
-        try {
-          const jsonData = JSON.parse(e.target.result);
-          const res = await fetch('/api/db/import', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonData })
-          });
-          const result = await res.json();
-          if (result.success) showToast('Database Restored!');
-        } catch (err) {
-          showToast('Corrupted JSON File', true);
-        }
-      };
-      reader.readAsText(file);
-    }
-
-    // ৭. API কী জেনারেশন ও লগ ফেচিং
-    async function generateApiKey() {
-      const res = await fetch('/api/keys/generate', { method: 'POST' });
+      const res = await fetch('/api/admin/tasks/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, reward, description })
+      });
       const data = await res.json();
-      document.getElementById('api-key-display').innerText = data.key;
-      showToast('New Key Generated');
+      if (data.success) {
+        document.getElementById('task-title').value = '';
+        document.getElementById('task-reward').value = '';
+        document.getElementById('task-desc').value = '';
+        fetchAdminTasks();
+      }
     }
 
-    async function fetchLogs() {
-      const res = await fetch('/api/logs');
-      const data = await res.json();
-      const container = document.getElementById('log-container');
-      if (data.logs.length === 0) return;
+    async function deleteAdminTask(taskId) {
+      if (!confirm('Are you sure you want to delete this task?')) return;
+      await fetch('/api/admin/tasks/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId })
+      });
+      fetchAdminTasks();
+    }
 
-      container.innerHTML = data.logs.map(log => \`
-        <div class="log-item">
+    async function fetchAdminTasks() {
+      const res = await fetch('/api/tasks/list');
+      const data = await res.json();
+      const list = document.getElementById('admin-task-list');
+
+      if (!data.tasks || data.tasks.length === 0) {
+        list.innerHTML = '<div style="font-size:12px; color:var(--text-muted); text-align:center;">No tasks found</div>';
+        return;
+      }
+
+      list.innerHTML = data.tasks.map(t => \`
+        <div style="background:#050508; border:1px solid var(--card-border); border-radius:12px; padding:12px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
           <div>
-            <span class="log-action">\${log.action}</span>
-            <div style="color:var(--text-muted); font-size:10px;">\${log.details}</div>
+            <div style="font-size:13px; font-weight:700; color:#fff;">\${t.title}</div>
+            <div style="font-size:11px; color:#10B981;">\${t.reward || ''}</div>
           </div>
-          <span style="font-size:10px; color:var(--text-sub);">\${log.timestamp}</span>
+          <button class="btn btn-danger" style="width:auto; padding:6px 10px; font-size:11px;" onclick="deleteAdminTask('\${t.id}')">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
         </div>
       \`).join('');
     }
-
-    // ৮. Command Palette (Cmd + K)
-    function toggleCmdPalette() {
-      const modal = document.getElementById('cmd-modal');
-      modal.classList.toggle('show');
-      if (modal.classList.contains('show')) {
-        document.getElementById('cmd-input').focus();
-      }
-    }
-
-    window.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-        e.preventDefault();
-        toggleCmdPalette();
-      }
-    });
   </script>
 </body>
 </html>`);
@@ -575,8 +613,9 @@ app.get('/', (req, res) => {
 // সার্ভার স্টার্ট
 app.listen(PORT, () => {
   console.log(`=========================================`);
-  console.log(`⚡ SJEMAR Cloud Engine Pro Live!`);
-  console.log(`📡 URL: http://localhost:${PORT}`);
+  console.log(`⚡ SJEMAR Engine Ready!`);
+  console.log(`👤 User Portal: http://localhost:${PORT}/`);
+  console.log(`🛠️ Admin Portal: http://localhost:${PORT}/admin`);
   console.log(`🔑 Admin Pass: ${ADMIN_PASS}`);
   console.log(`=========================================`);
 });
