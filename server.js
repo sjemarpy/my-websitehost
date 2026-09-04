@@ -1,5 +1,3 @@
-"use strict";
-
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
@@ -7,88 +5,106 @@ const crypto = require("crypto");
 
 const app = express();
 
-/* =========================================================
-   CONFIG
-========================================================= */
-
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASS = process.env.ADMIN_PASS || "py.py.php";
-const DATA_DIR = path.join(__dirname, "data");
-const DB_FILE = path.join(DATA_DIR, "pages.json");
-const MAX_HTML_SIZE = 10 * 1024 * 1024;
 
-/* =========================================================
-   EXPRESS MIDDLEWARE
-========================================================= */
+const DATA_DIR = path.join(__dirname, "data");
+const DATA_FILE = path.join(DATA_DIR, "pages.json");
+
+const MAX_HTML = 10 * 1024 * 1024;
 
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 
-app.use(express.urlencoded({ extended: true, limit: "12mb" }));
 app.use(express.json({ limit: "12mb" }));
+app.use(express.urlencoded({ extended: true, limit: "12mb" }));
 
-/* =========================================================
+/* =========================
    DATABASE
-========================================================= */
+========================= */
 
 function initDB() {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
 
-  if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, JSON.stringify({ sites: [] }, null, 2));
+  if (!fs.existsSync(DATA_FILE)) {
+    fs.writeFileSync(
+      DATA_FILE,
+      JSON.stringify({ sites: [] }, null, 2)
+    );
   }
 }
 
-initDB();
+function getDB() {
+  initDB();
 
-function readDB() {
   try {
-    const data = fs.readFileSync(DB_FILE, "utf8");
-    const parsed = JSON.parse(data);
-
-    if (!parsed || !Array.isArray(parsed.sites)) {
-      return { sites: [] };
-    }
-
-    return parsed;
-  } catch (error) {
-    console.error("Database error:", error);
+    return JSON.parse(
+      fs.readFileSync(DATA_FILE, "utf8")
+    );
+  } catch {
     return { sites: [] };
   }
 }
 
 function saveDB(db) {
-  const temp = DB_FILE + ".tmp";
-  fs.writeFileSync(temp, JSON.stringify(db, null, 2), "utf8");
-  fs.renameSync(temp, DB_FILE);
+  initDB();
+
+  const temp = DATA_FILE + ".tmp";
+
+  fs.writeFileSync(
+    temp,
+    JSON.stringify(db, null, 2),
+    "utf8"
+  );
+
+  fs.renameSync(temp, DATA_FILE);
 }
 
-/* =========================================================
+initDB();
+
+/* =========================
    HELPERS
-========================================================= */
+========================= */
 
 function id() {
-  return crypto.randomBytes(16).toString("hex");
+  return crypto.randomBytes(12).toString("hex");
+}
+
+function secret() {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function hash(value) {
+  return crypto
+    .createHash("sha256")
+    .update(String(value))
+    .digest("hex");
 }
 
 function slugify(value) {
   return String(value || "")
-    .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9-_]/g, "-")
-    .replace(/-+/g, "-")
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
+    .slice(0, 50);
 }
 
 function validSlug(value) {
-  return /^[a-z0-9][a-z0-9-_]{1,79}$/.test(value);
+  return /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/.test(value);
+}
+
+function cleanTitle(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
 }
 
 function escapeHTML(value) {
-  return String(value || "")
+  return String(value ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -96,750 +112,2623 @@ function escapeHTML(value) {
     .replace(/'/g, "&#039;");
 }
 
-function validHTML(html) {
-  if (typeof html !== "string" || html.length === 0) {
-    return false;
+function getCookie(req, name) {
+  const cookies = req.headers.cookie || "";
+
+  for (const part of cookies.split(";")) {
+    const item = part.trim();
+
+    if (item.startsWith(name + "=")) {
+      return decodeURIComponent(
+        item.substring(name.length + 1)
+      );
+    }
   }
-  return Buffer.byteLength(html, "utf8") <= MAX_HTML_SIZE;
+
+  return null;
 }
 
-/* =========================================================
-   ADMIN AUTH
-========================================================= */
+/* =========================
+   ADMIN SESSION
+========================= */
 
-const COOKIE_NAME = "sjemar_admin";
+const sessions = new Map();
 
-function createToken() {
-  const time = Date.now().toString();
-  const hash = crypto
-    .createHash("sha256")
-    .update(time + ":" + ADMIN_PASS)
-    .digest("hex");
+function adminLogged(req) {
+  const token = getCookie(req, "sj_admin");
 
-  return time + "." + hash;
-}
-
-function checkToken(token) {
   if (!token) return false;
 
-  const parts = token.split(".");
-  if (parts.length !== 2) return false;
+  const session = sessions.get(token);
 
-  const time = Number(parts[0]);
-  const hash = parts[1];
+  if (!session) return false;
 
-  if (!Number.isFinite(time)) return false;
-  if (Date.now() - time > 24 * 60 * 60 * 1000) return false;
+  if (
+    Date.now() - session.created >
+    7 * 24 * 60 * 60 * 1000
+  ) {
+    sessions.delete(token);
+    return false;
+  }
 
-  const expected = crypto
-    .createHash("sha256")
-    .update(time + ":" + ADMIN_PASS)
-    .digest("hex");
-
-  return hash === expected;
+  return true;
 }
 
-function cookies(req) {
-  const header = req.headers.cookie || "";
-  const result = {};
-
-  header.split(";").forEach((item) => {
-    const index = item.indexOf("=");
-    if (index === -1) return;
-
-    const key = item.slice(0, index).trim();
-    const value = item.slice(index + 1).trim();
-    result[key] = decodeURIComponent(value);
-  });
-
-  return result;
-}
-
-function authenticated(req) {
-  const data = cookies(req);
-  return checkToken(data[COOKIE_NAME]);
-}
-
-function adminOnly(req, res, next) {
-  if (!authenticated(req)) {
+function requireAdmin(req, res, next) {
+  if (!adminLogged(req)) {
     return res.status(401).json({
-      success: false,
-      error: "Unauthorized",
+      ok: false,
+      error: "Unauthorized"
     });
   }
+
   next();
 }
 
-/* =========================================================
-   SECURITY HEADERS
-========================================================= */
+/* =========================
+   SECURITY
+========================= */
 
 app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader(
+    "X-Content-Type-Options",
+    "nosniff"
+  );
+
+  res.setHeader(
+    "Referrer-Policy",
+    "strict-origin-when-cross-origin"
+  );
+
+  /*
+    Published user HTML is sandboxed.
+    This prevents hosted JavaScript from becoming
+    the same security origin as the admin application.
+  */
+  if (req.path.startsWith("/site/")) {
+    res.setHeader(
+      "Content-Security-Policy",
+      "sandbox allow-scripts allow-forms allow-popups allow-modals"
+    );
+    res.setHeader(
+      "Cache-Control",
+      "no-store"
+    );
+  }
+
   next();
 });
+
+/* =========================================================
+   PUBLIC HTML -> LINK
+========================================================= */
+
+app.post("/api/publish", (req, res) => {
+  try {
+    const title = cleanTitle(req.body.title);
+    const html = req.body.html;
+
+    let slug = slugify(
+      req.body.slug || title
+    );
+
+    if (!title) {
+      return res.status(400).json({
+        ok: false,
+        error: "Website title is required"
+      });
+    }
+
+    if (
+      typeof html !== "string" ||
+      !html.trim()
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "HTML is required"
+      });
+    }
+
+    if (
+      Buffer.byteLength(html, "utf8") >
+      MAX_HTML
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "HTML maximum size is 10MB"
+      });
+    }
+
+    if (!slug) {
+      slug =
+        "site-" +
+        crypto.randomBytes(4).toString("hex");
+    }
+
+    if (!validSlug(slug)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid URL slug"
+      });
+    }
+
+    const db = getDB();
+
+    if (
+      db.sites.some(
+        site => site.slug === slug
+      )
+    ) {
+      return res.status(409).json({
+        ok: false,
+        error: "URL already exists"
+      });
+    }
+
+    const editKey = secret();
+
+    const site = {
+      id: id(),
+      title,
+      slug,
+      html,
+      editKey: hash(editKey),
+      published: true,
+      views: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    db.sites.unshift(site);
+
+    saveDB(db);
+
+    res.json({
+      ok: true,
+      site: {
+        id: site.id,
+        title: site.title,
+        slug: site.slug,
+        url:
+          req.protocol +
+          "://" +
+          req.get("host") +
+          "/site/" +
+          site.slug,
+        editKey
+      }
+    });
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      ok: false,
+      error: "Publish failed"
+    });
+  }
+});
+
+/* =========================================================
+   PUBLIC SITE
+========================================================= */
+
+app.get("/site/:slug", (req, res) => {
+  const db = getDB();
+
+  const site = db.sites.find(
+    x => x.slug === req.params.slug
+  );
+
+  if (!site || site.published === false) {
+    return res.status(404).send(
+      notFound("Website not found")
+    );
+  }
+
+  site.views =
+    Number(site.views || 0) + 1;
+
+  saveDB(db);
+
+  res.type("html").send(site.html);
+});
+
+/* =========================================================
+   ADMIN LOGIN
+========================================================= */
+
+app.post("/api/admin/login", (req, res) => {
+  const password =
+    String(req.body.password || "");
+
+  if (password !== ADMIN_PASS) {
+    return res.status(401).json({
+      ok: false,
+      error: "Wrong password"
+    });
+  }
+
+  const token = secret();
+
+  sessions.set(token, {
+    created: Date.now()
+  });
+
+  res.cookie("sj_admin", token, {
+    httpOnly: true,
+    secure:
+      process.env.NODE_ENV ===
+      "production",
+    sameSite: "strict",
+    maxAge:
+      7 * 24 * 60 * 60 * 1000,
+    path: "/"
+  });
+
+  res.json({
+    ok: true
+  });
+});
+
+app.post(
+  "/api/admin/logout",
+  (req, res) => {
+    const token =
+      getCookie(req, "sj_admin");
+
+    if (token) {
+      sessions.delete(token);
+    }
+
+    res.clearCookie("sj_admin", {
+      httpOnly: true,
+      secure:
+        process.env.NODE_ENV ===
+        "production",
+      sameSite: "strict",
+      path: "/"
+    });
+
+    res.json({
+      ok: true
+    });
+  }
+);
+
+/* =========================================================
+   ADMIN API
+========================================================= */
+
+app.get(
+  "/api/admin/me",
+  requireAdmin,
+  (req, res) => {
+    res.json({
+      ok: true
+    });
+  }
+);
+
+app.get(
+  "/api/admin/sites",
+  requireAdmin,
+  (req, res) => {
+    const db = getDB();
+
+    res.json({
+      ok: true,
+      sites: db.sites.map(site => ({
+        id: site.id,
+        title: site.title,
+        slug: site.slug,
+        published:
+          site.published !== false,
+        views:
+          Number(site.views || 0),
+        createdAt: site.createdAt,
+        updatedAt: site.updatedAt
+      }))
+    });
+  }
+);
+
+app.get(
+  "/api/admin/sites/:id",
+  requireAdmin,
+  (req, res) => {
+    const db = getDB();
+
+    const site = db.sites.find(
+      x => x.id === req.params.id
+    );
+
+    if (!site) {
+      return res.status(404).json({
+        ok: false,
+        error: "Site not found"
+      });
+    }
+
+    res.json({
+      ok: true,
+      site: {
+        id: site.id,
+        title: site.title,
+        slug: site.slug,
+        html: site.html,
+        published:
+          site.published !== false,
+        views:
+          Number(site.views || 0)
+      }
+    });
+  }
+);
+
+app.post(
+  "/api/admin/sites",
+  requireAdmin,
+  (req, res) => {
+    try {
+      const title =
+        cleanTitle(req.body.title);
+
+      const html = req.body.html;
+
+      let slug = slugify(
+        req.body.slug || title
+      );
+
+      if (!title || !html) {
+        return res.status(400).json({
+          ok: false,
+          error: "Title and HTML are required"
+        });
+      }
+
+      if (
+        Buffer.byteLength(
+          html,
+          "utf8"
+        ) > MAX_HTML
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: "HTML is too large"
+        });
+      }
+
+      if (!slug) {
+        slug =
+          "site-" +
+          crypto.randomBytes(4).toString("hex");
+      }
+
+      if (!validSlug(slug)) {
+        return res.status(400).json({
+          ok: false,
+          error: "Invalid slug"
+        });
+      }
+
+      const db = getDB();
+
+      if (
+        db.sites.some(
+          x => x.slug === slug
+        )
+      ) {
+        return res.status(409).json({
+          ok: false,
+          error: "Slug already exists"
+        });
+      }
+
+      const site = {
+        id: id(),
+        title,
+        slug,
+        html,
+        editKey: hash(secret()),
+        published: true,
+        views: 0,
+        createdAt:
+          new Date().toISOString(),
+        updatedAt:
+          new Date().toISOString()
+      };
+
+      db.sites.unshift(site);
+
+      saveDB(db);
+
+      res.json({
+        ok: true,
+        site: {
+          id: site.id,
+          title: site.title,
+          slug: site.slug
+        }
+      });
+    } catch (err) {
+      console.error(err);
+
+      res.status(500).json({
+        ok: false,
+        error: "Create failed"
+      });
+    }
+  }
+);
+
+app.put(
+  "/api/admin/sites/:id",
+  requireAdmin,
+  (req, res) => {
+    const db = getDB();
+
+    const site = db.sites.find(
+      x => x.id === req.params.id
+    );
+
+    if (!site) {
+      return res.status(404).json({
+        ok: false,
+        error: "Site not found"
+      });
+    }
+
+    const title =
+      cleanTitle(req.body.title);
+
+    const html = req.body.html;
+
+    if (!title || !html) {
+      return res.status(400).json({
+        ok: false,
+        error: "Title and HTML are required"
+      });
+    }
+
+    if (
+      Buffer.byteLength(
+        html,
+        "utf8"
+      ) > MAX_HTML
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "HTML is too large"
+      });
+    }
+
+    site.title = title;
+    site.html = html;
+
+    if (
+      typeof req.body.published ===
+      "boolean"
+    ) {
+      site.published =
+        req.body.published;
+    }
+
+    site.updatedAt =
+      new Date().toISOString();
+
+    saveDB(db);
+
+    res.json({
+      ok: true
+    });
+  }
+);
+
+app.patch(
+  "/api/admin/sites/:id/toggle",
+  requireAdmin,
+  (req, res) => {
+    const db = getDB();
+
+    const site = db.sites.find(
+      x => x.id === req.params.id
+    );
+
+    if (!site) {
+      return res.status(404).json({
+        ok: false,
+        error: "Site not found"
+      });
+    }
+
+    site.published =
+      site.published === false;
+
+    site.updatedAt =
+      new Date().toISOString();
+
+    saveDB(db);
+
+    res.json({
+      ok: true,
+      published:
+        site.published
+    });
+  }
+);
+
+app.delete(
+  "/api/admin/sites/:id",
+  requireAdmin,
+  (req, res) => {
+    const db = getDB();
+
+    const oldLength =
+      db.sites.length;
+
+    db.sites =
+      db.sites.filter(
+        x => x.id !== req.params.id
+      );
+
+    if (
+      db.sites.length ===
+      oldLength
+    ) {
+      return res.status(404).json({
+        ok: false,
+        error: "Site not found"
+      });
+    }
+
+    saveDB(db);
+
+    res.json({
+      ok: true
+    });
+  }
+);
+
+/* =========================================================
+   HOME PAGE
+========================================================= */
+
+function page(title, content, script = "") {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport"
+content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#000000">
+
+<title>${escapeHTML(title)} — SJEMAR</title>
+
+<style>
+
+*{
+  box-sizing:border-box;
+}
+
+html{
+  background:#000;
+}
+
+body{
+  margin:0;
+  background:
+    radial-gradient(
+      circle at 50% -10%,
+      rgba(255,255,255,.10),
+      transparent 35%
+    ),
+    #000;
+  color:#fff;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Display",
+    Inter,
+    Arial,
+    sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+
+a{
+  color:inherit;
+  text-decoration:none;
+}
+
+button,
+input,
+textarea{
+  font:inherit;
+}
+
+.nav{
+  position:sticky;
+  top:0;
+  z-index:100;
+  border-bottom:
+    1px solid rgba(255,255,255,.07);
+  background:
+    rgba(0,0,0,.72);
+  backdrop-filter:
+    blur(25px);
+  -webkit-backdrop-filter:
+    blur(25px);
+}
+
+.nav-inner{
+  width:min(1120px,calc(100% - 28px));
+  height:68px;
+  margin:auto;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+}
+
+.logo{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  font-weight:800;
+  letter-spacing:-.04em;
+}
+
+.logo-box{
+  width:34px;
+  height:34px;
+  display:grid;
+  place-items:center;
+  border-radius:11px;
+  background:#fff;
+  color:#000;
+  font-size:13px;
+}
+
+.nav-menu{
+  display:flex;
+  gap:5px;
+}
+
+.nav-menu a{
+  color:#999;
+  padding:10px 13px;
+  border-radius:12px;
+}
+
+.nav-menu a:hover{
+  color:#fff;
+  background:
+    rgba(255,255,255,.07);
+}
+
+.wrap{
+  width:min(1120px,calc(100% - 28px));
+  margin:auto;
+}
+
+.hero{
+  padding:
+    105px 0 70px;
+  text-align:center;
+}
+
+.badge{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:
+    8px 13px;
+  border:
+    1px solid rgba(255,255,255,.11);
+  border-radius:999px;
+  background:
+    rgba(255,255,255,.045);
+  color:#aaa;
+  font-size:12px;
+  backdrop-filter:
+    blur(15px);
+}
+
+.badge-dot{
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:#fff;
+  box-shadow:
+    0 0 14px #fff;
+}
+
+.hero h1{
+  margin:
+    24px auto 15px;
+  max-width:850px;
+  font-size:
+    clamp(48px,9vw,92px);
+  line-height:.92;
+  letter-spacing:-.075em;
+}
+
+.hero p{
+  max-width:650px;
+  margin:auto;
+  color:#999;
+  line-height:1.7;
+  font-size:16px;
+}
+
+.actions{
+  margin-top:28px;
+  display:flex;
+  justify-content:center;
+  flex-wrap:wrap;
+  gap:9px;
+}
+
+.btn{
+  min-height:45px;
+  padding:
+    0 18px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:14px;
+  border:
+    1px solid rgba(255,255,255,.11);
+  background:
+    rgba(255,255,255,.055);
+  color:#fff;
+  cursor:pointer;
+  transition:.2s;
+}
+
+.btn:hover{
+  transform:translateY(-2px);
+  background:
+    rgba(255,255,255,.10);
+}
+
+.btn.primary{
+  color:#000;
+  background:#fff;
+  border-color:#fff;
+  font-weight:700;
+}
+
+.section{
+  padding:
+    30px 0 75px;
+}
+
+.section-head{
+  margin-bottom:20px;
+}
+
+.section-head h2{
+  margin:0;
+  font-size:29px;
+  letter-spacing:-.05em;
+}
+
+.section-head p{
+  margin:
+    7px 0 0;
+  color:#777;
+}
+
+.grid{
+  display:grid;
+  grid-template-columns:
+    repeat(3,1fr);
+  gap:13px;
+}
+
+.card{
+  position:relative;
+  overflow:hidden;
+  padding:24px;
+  min-height:210px;
+  border:
+    1px solid rgba(255,255,255,.09);
+  border-radius:25px;
+  background:
+    linear-gradient(
+      145deg,
+      rgba(255,255,255,.075),
+      rgba(255,255,255,.025)
+    );
+  backdrop-filter:
+    blur(25px);
+  -webkit-backdrop-filter:
+    blur(25px);
+  box-shadow:
+    0 25px 70px
+    rgba(0,0,0,.45);
+  transition:.25s;
+}
+
+.card:before{
+  content:"";
+  position:absolute;
+  width:170px;
+  height:170px;
+  right:-80px;
+  top:-90px;
+  border-radius:50%;
+  background:
+    rgba(255,255,255,.035);
+  filter:blur(20px);
+}
+
+.card:hover{
+  transform:
+    translateY(-4px);
+  border-color:
+    rgba(255,255,255,.17);
+}
+
+.card-top{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+
+.icon{
+  width:43px;
+  height:43px;
+  display:grid;
+  place-items:center;
+  border-radius:14px;
+  border:
+    1px solid rgba(255,255,255,.10);
+  background:
+    rgba(255,255,255,.065);
+  font-size:11px;
+  font-weight:800;
+}
+
+.pill{
+  padding:
+    6px 9px;
+  border:
+    1px solid rgba(255,255,255,.09);
+  border-radius:999px;
+  color:#999;
+  font-size:10px;
+}
+
+.card h3{
+  margin:
+    28px 0 8px;
+  font-size:21px;
+  letter-spacing:-.035em;
+}
+
+.card p{
+  margin:0;
+  color:#888;
+  line-height:1.55;
+  font-size:14px;
+}
+
+.view{
+  display:inline-flex;
+  margin-top:19px;
+  font-size:12px;
+  font-weight:700;
+}
+
+.feature{
+  display:grid;
+  grid-template-columns:
+    1.4fr .6fr;
+  gap:13px;
+}
+
+.large{
+  min-height:330px;
+}
+
+.large h2{
+  margin-top:90px;
+  margin-bottom:10px;
+  font-size:42px;
+  letter-spacing:-.065em;
+}
+
+.small-stack{
+  display:grid;
+  gap:13px;
+}
+
+.mini{
+  min-height:158px;
+}
+
+.number{
+  display:block;
+  font-size:40px;
+  font-weight:800;
+  letter-spacing:-.07em;
+}
+
+.form{
+  max-width:900px;
+  margin:
+    45px auto 90px;
+  padding:25px;
+  border:
+    1px solid rgba(255,255,255,.09);
+  border-radius:27px;
+  background:
+    rgba(255,255,255,.045);
+  backdrop-filter:
+    blur(25px);
+}
+
+.field{
+  margin-bottom:17px;
+}
+
+label{
+  display:block;
+  margin-bottom:8px;
+  color:#bbb;
+  font-size:12px;
+}
+
+input,
+textarea{
+  width:100%;
+  outline:0;
+  color:#fff;
+  background:
+    rgba(0,0,0,.55);
+  border:
+    1px solid rgba(255,255,255,.10);
+  border-radius:14px;
+  padding:13px;
+}
+
+textarea{
+  min-height:430px;
+  resize:vertical;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  font-size:12px;
+  line-height:1.55;
+}
+
+input:focus,
+textarea:focus{
+  border-color:
+    rgba(255,255,255,.30);
+}
+
+.notice{
+  display:none;
+  margin:14px 0;
+  padding:14px;
+  border-radius:14px;
+  background:
+    rgba(255,255,255,.05);
+  border:
+    1px solid rgba(255,255,255,.10);
+  color:#aaa;
+}
+
+.notice.show{
+  display:block;
+}
+
+.result{
+  display:none;
+  margin-top:15px;
+  padding:18px;
+  border-radius:18px;
+  background:
+    rgba(255,255,255,.045);
+  border:
+    1px solid rgba(255,255,255,.09);
+}
+
+.result.show{
+  display:block;
+}
+
+.result code{
+  display:block;
+  margin:
+    10px 0;
+  padding:12px;
+  overflow:auto;
+  background:#000;
+  border-radius:12px;
+  color:#ccc;
+}
+
+.footer{
+  padding:
+    35px 0 55px;
+  border-top:
+    1px solid rgba(255,255,255,.07);
+  color:#666;
+  font-size:12px;
+}
+
+@media(max-width:800px){
+
+  .grid{
+    grid-template-columns:
+      1fr 1fr;
+  }
+
+  .feature{
+    grid-template-columns:1fr;
+  }
+
+}
+
+@media(max-width:550px){
+
+  .wrap{
+    width:
+      calc(100% - 22px);
+  }
+
+  .hero{
+    padding-top:75px;
+  }
+
+  .hero h1{
+    font-size:51px;
+  }
+
+  .grid{
+    grid-template-columns:1fr;
+  }
+
+  .nav-menu a{
+    display:none;
+  }
+
+  .large h2{
+    font-size:32px;
+  }
+
+  .form{
+    padding:17px;
+  }
+}
+
+</style>
+</head>
+
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+
+    <a href="/" class="logo">
+      <span class="logo-box">S</span>
+      <span>SJEMAR</span>
+    </a>
+
+    <div class="nav-menu">
+      <a href="/">Home</a>
+      <a href="/create">Create</a>
+      <a href="/admin">Admin</a>
+    </div>
+
+  </div>
+</nav>
+
+${content}
+
+<footer class="footer">
+  <div class="wrap">
+    SJEMAR Hosting Engine
+  </div>
+</footer>
+
+${script}
+
+</body>
+</html>`;
+}
 
 /* =========================================================
    HOME
 ========================================================= */
 
 app.get("/", (req, res) => {
-  res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>SJEMAR Hosting</title>
-<style>
-*{box-sizing:border-box}
-html,body{margin:0;min-height:100%}
-body{background:#030407;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif}
-body:before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at 15% 10%,rgba(255,255,255,.08),transparent 30%),radial-gradient(circle at 85% 15%,rgba(90,110,255,.08),transparent 28%)}
-.nav{position:relative;width:min(1100px,calc(100% - 28px));margin:16px auto;padding:15px 18px;display:flex;align-items:center;justify-content:space-between;border:1px solid rgba(255,255,255,.08);border-radius:22px;background:rgba(18,19,24,.65);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px)}
-.logo{font-size:17px;font-weight:700;letter-spacing:-.4px}
-.pill{font-size:12px;color:#9299a8;padding:7px 11px;border-radius:999px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.07)}
-.hero{width:min(1100px,calc(100% - 28px));margin:100px auto 60px;text-align:center}
-.hero h1{margin:0;font-size:clamp(44px,8vw,78px);line-height:.98;letter-spacing:-4px}
-.hero p{width:min(650px,100%);margin:25px auto 0;color:#858d9d;font-size:16px;line-height:1.7}
-.cards{width:min(1100px,calc(100% - 28px));margin:auto;display:grid;grid-template-columns:repeat(3,1fr);gap:15px}
-.card{min-height:190px;padding:27px;border-radius:27px;border:1px solid rgba(255,255,255,.07);background:linear-gradient(145deg,rgba(255,255,255,.07),rgba(255,255,255,.025));box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 25px 80px rgba(0,0,0,.4);backdrop-filter:blur(25px)}
-.card h2{margin:0 0 10px;font-size:19px}
-.card p{margin:0;color:#858d9d;line-height:1.6;font-size:14px}
-footer{text-align:center;padding:60px 20px 40px;color:#555c68;font-size:12px}
-@media(max-width:760px){.cards{grid-template-columns:1fr}.hero{margin-top:70px}.hero h1{letter-spacing:-2.5px}}
-</style>
-</head>
-<body>
-<header class="nav">
-  <div class="logo">SJEMAR</div>
-  <div class="pill">Web Hosting</div>
-</header>
+
+  const db = getDB();
+
+  const sites =
+    db.sites.filter(
+      x => x.published !== false
+    );
+
+  const views =
+    sites.reduce(
+      (a, b) =>
+        a + Number(b.views || 0),
+      0
+    );
+
+  const projects =
+    sites
+      .slice(0, 6)
+      .map(site => `
+        <div class="card">
+
+          <div class="card-top">
+            <div class="icon">
+              WEB
+            </div>
+
+            <span class="pill">
+              100% Free
+            </span>
+          </div>
+
+          <h3>
+            ${escapeHTML(site.title)}
+          </h3>
+
+          <p>
+            Published website project
+          </p>
+
+          <a
+            class="view"
+            href="/site/${encodeURIComponent(site.slug)}"
+          >
+            VIEW
+          </a>
+
+        </div>
+      `)
+      .join("");
+
+  res.send(
+    page(
+      "SJEMAR",
+      `
+<main>
+
 <section class="hero">
-  <h1>Publish your web.</h1>
-  <p>Host HTML projects and turn them into public web links with SJEMAR Hosting.</p>
+
+  <div class="wrap">
+
+    <div class="badge">
+      <span class="badge-dot"></span>
+      100% Free Hosting
+    </div>
+
+    <h1>
+      Build.<br>
+      Publish.<br>
+      Share.
+    </h1>
+
+    <p>
+      Upload your HTML website and
+      instantly get a public link.
+      Fast, simple and built for the web.
+    </p>
+
+    <div class="actions">
+
+      <a
+        class="btn primary"
+        href="/create"
+      >
+        CREATE WEBSITE
+      </a>
+
+      <a
+        class="btn"
+        href="#resources"
+      >
+        EXPLORE
+      </a>
+
+    </div>
+
+  </div>
+
 </section>
-<section class="cards">
+
+<section
+  class="section"
+  id="resources"
+>
+
+<div class="wrap">
+
+<div class="section-head">
+
+  <h2>
+    Resources
+  </h2>
+
+  <p>
+    Free tools and services.
+  </p>
+
+</div>
+
+<div class="grid">
+
   <div class="card">
-    <h2>HTML Hosting</h2>
-    <p>Upload a complete HTML document containing your CSS and JavaScript.</p>
+
+    <div class="card-top">
+
+      <div class="icon">
+        WEB
+      </div>
+
+      <span class="pill">
+        100% Free
+      </span>
+
+    </div>
+
+    <h3>
+      Website
+    </h3>
+
+    <p>
+      Create and publish
+      your own HTML website.
+    </p>
+
+    <a
+      class="view"
+      href="/create"
+    >
+      VIEW
+    </a>
+
   </div>
+
+
   <div class="card">
-    <h2>Public Links</h2>
-    <p>Every published project gets a unique URL that can be shared.</p>
+
+    <div class="card-top">
+
+      <div class="icon">
+        APK
+      </div>
+
+      <span class="pill">
+        FREE
+      </span>
+
+    </div>
+
+    <h3>
+      APK
+    </h3>
+
+    <p>
+      HTML based application
+      project section.
+    </p>
+
+    <a
+      class="view"
+      href="/create"
+    >
+      VIEW
+    </a>
+
   </div>
+
+
   <div class="card">
-    <h2>Management</h2>
-    <p>Manage, edit, publish and delete hosted projects from the admin area.</p>
+
+    <div class="card-top">
+
+      <div class="icon">
+        BOT
+      </div>
+
+      <span class="pill">
+        FREE
+      </span>
+
+    </div>
+
+    <h3>
+      BOT
+    </h3>
+
+    <p>
+      Bot and automation
+      project section.
+    </p>
+
+    <a
+      class="view"
+      href="/create"
+    >
+      VIEW
+    </a>
+
   </div>
+
+</div>
+
+</div>
+
 </section>
-<footer>SJEMAR Hosting Engine</footer>
-</body>
-</html>`);
+
+
+<section class="section">
+
+<div class="wrap">
+
+<div class="feature">
+
+  <div class="card large">
+
+    <div class="card-top">
+
+      <div class="icon">
+        SJ
+      </div>
+
+      <span class="pill">
+        SJEMAR
+      </span>
+
+    </div>
+
+    <h2>
+      OLED.<br>
+      Glass.<br>
+      Simple.
+    </h2>
+
+    <p>
+      A clean dark interface
+      designed for mobile and
+      desktop.
+    </p>
+
+  </div>
+
+
+  <div class="small-stack">
+
+    <div class="card mini">
+
+      <span class="number">
+        ${sites.length}
+      </span>
+
+      <p>
+        Published websites
+      </p>
+
+    </div>
+
+
+    <div class="card mini">
+
+      <span class="number">
+        ${views}
+      </span>
+
+      <p>
+        Total views
+      </p>
+
+    </div>
+
+  </div>
+
+</div>
+
+</div>
+
+</section>
+
+
+${
+  projects
+    ? `
+<section class="section">
+
+<div class="wrap">
+
+<div class="section-head">
+
+  <h2>
+    Review Projects
+  </h2>
+
+  <p>
+    Latest published websites.
+  </p>
+
+</div>
+
+<div class="grid">
+${projects}
+</div>
+
+</div>
+
+</section>
+`
+    : ""
+}
+
+
+<section class="section">
+
+<div class="wrap">
+
+<div class="card large">
+
+  <div class="card-top">
+
+    <div class="icon">
+      HTML
+    </div>
+
+    <span class="pill">
+      INSTANT
+    </span>
+
+  </div>
+
+  <h2>
+    Have an HTML file?
+  </h2>
+
+  <p>
+    Publish it now and receive
+    a shareable public URL.
+  </p>
+
+  <div class="actions"
+       style="justify-content:flex-start">
+
+    <a
+      class="btn primary"
+      href="/create"
+    >
+      UPLOAD HTML
+    </a>
+
+  </div>
+
+</div>
+
+</div>
+
+</section>
+
+</main>
+`
+    )
+  );
 });
 
 /* =========================================================
-   ADMIN LOGIN PAGE
+   CREATE PAGE
+========================================================= */
+
+app.get("/create", (req, res) => {
+
+  res.send(
+    page(
+      "Create Website",
+      `
+<main class="wrap">
+
+<section class="hero"
+         style="padding-bottom:20px">
+
+  <div class="badge">
+    <span class="badge-dot"></span>
+    HTML → LINK
+  </div>
+
+  <h1>
+    Publish your<br>
+    website.
+  </h1>
+
+  <p>
+    Paste your HTML code,
+    choose a URL and publish.
+  </p>
+
+</section>
+
+
+<section class="form">
+
+  <div class="field">
+
+    <label>
+      Website title
+    </label>
+
+    <input
+      id="title"
+      maxlength="80"
+      placeholder="My Website"
+    >
+
+  </div>
+
+
+  <div class="field">
+
+    <label>
+      URL slug
+    </label>
+
+    <input
+      id="slug"
+      maxlength="50"
+      placeholder="my-website"
+    >
+
+  </div>
+
+
+  <div class="field">
+
+    <label>
+      HTML
+    </label>
+
+    <textarea
+      id="html"
+      spellcheck="false"
+      placeholder="<!DOCTYPE html>
+<html>
+<head>
+<title>My Website</title>
+</head>
+<body>
+<h1>Hello World</h1>
+</body>
+</html>"
+    ></textarea>
+
+  </div>
+
+
+  <div
+    id="notice"
+    class="notice"
+  ></div>
+
+
+  <button
+    id="publish"
+    class="btn primary"
+    style="width:100%"
+  >
+    PUBLISH WEBSITE
+  </button>
+
+
+  <div
+    id="result"
+    class="result"
+  >
+
+    <strong>
+      Website published
+    </strong>
+
+    <p>
+      Your public link:
+    </p>
+
+    <code id="url"></code>
+
+    <div
+      class="actions"
+      style="justify-content:flex-start"
+    >
+
+      <a
+        id="open"
+        class="btn primary"
+        target="_blank"
+      >
+        OPEN
+      </a>
+
+      <button
+        id="copy"
+        class="btn"
+      >
+        COPY LINK
+      </button>
+
+    </div>
+
+
+    <p
+      style="
+      color:#666;
+      font-size:12px;
+      margin-top:18px"
+    >
+      Save this edit key.
+    </p>
+
+    <code id="key"></code>
+
+  </div>
+
+</section>
+
+</main>
+`,
+      `
+<script>
+
+const title =
+  document.getElementById("title");
+
+const slug =
+  document.getElementById("slug");
+
+const html =
+  document.getElementById("html");
+
+const publish =
+  document.getElementById("publish");
+
+const notice =
+  document.getElementById("notice");
+
+const result =
+  document.getElementById("result");
+
+const url =
+  document.getElementById("url");
+
+const key =
+  document.getElementById("key");
+
+const open =
+  document.getElementById("open");
+
+const copy =
+  document.getElementById("copy");
+
+
+function show(text){
+
+  notice.textContent = text;
+
+  notice.className =
+    "notice show";
+
+}
+
+
+title.addEventListener(
+  "input",
+  () => {
+
+    if(slug.dataset.manual)
+      return;
+
+    slug.value =
+      title.value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g,"-")
+        .replace(/^-+|-+$/g,"")
+        .slice(0,50);
+
+  }
+);
+
+
+slug.addEventListener(
+  "input",
+  () => {
+
+    slug.dataset.manual = "1";
+
+    slug.value =
+      slug.value
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g,"")
+        .slice(0,50);
+
+  }
+);
+
+
+publish.addEventListener(
+  "click",
+  async () => {
+
+    if(!title.value.trim()){
+      show("Enter website title.");
+      return;
+    }
+
+    if(!html.value.trim()){
+      show("Paste your HTML.");
+      return;
+    }
+
+    publish.disabled = true;
+    publish.textContent =
+      "PUBLISHING...";
+
+    try{
+
+      const r =
+        await fetch(
+          "/api/publish",
+          {
+            method:"POST",
+            headers:{
+              "Content-Type":
+                "application/json"
+            },
+            body:JSON.stringify({
+              title:title.value,
+              slug:slug.value,
+              html:html.value
+            })
+          }
+        );
+
+      const data =
+        await r.json();
+
+      if(!r.ok || !data.ok){
+        throw new Error(
+          data.error ||
+          "Publish failed"
+        );
+      }
+
+      url.textContent =
+        data.site.url;
+
+      key.textContent =
+        data.site.editKey;
+
+      open.href =
+        data.site.url;
+
+      result.classList.add(
+        "show"
+      );
+
+      show(
+        "Website published successfully."
+      );
+
+      result.scrollIntoView({
+        behavior:"smooth"
+      });
+
+    }catch(error){
+
+      show(
+        error.message
+      );
+
+    }finally{
+
+      publish.disabled = false;
+
+      publish.textContent =
+        "PUBLISH WEBSITE";
+
+    }
+
+  }
+);
+
+
+copy.addEventListener(
+  "click",
+  async () => {
+
+    try{
+
+      await navigator.clipboard
+        .writeText(
+          url.textContent
+        );
+
+      copy.textContent =
+        "COPIED";
+
+      setTimeout(
+        () =>
+          copy.textContent =
+            "COPY LINK",
+        1500
+      );
+
+    }catch{
+
+      show(
+        "Copy failed."
+      );
+
+    }
+
+  }
+);
+
+</script>
+`
+    )
+  );
+});
+
+/* =========================================================
+   ADMIN PAGE
 ========================================================= */
 
 app.get("/admin", (req, res) => {
-  if (authenticated(req)) {
-    return res.redirect("/admin/dashboard");
-  }
 
-  res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SJEMAR Admin</title>
-<style>
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:#030407;color:white;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif}
-.login{width:100%;max-width:410px;padding:30px;border-radius:29px;background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.09);box-shadow:0 30px 100px rgba(0,0,0,.6);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px)}
-h1{margin:0 0 8px;font-size:28px}
-p{margin:0 0 20px;color:#858d9d;font-size:14px}
-input{width:100%;height:53px;padding:0 16px;border-radius:16px;border:1px solid rgba(255,255,255,.09);outline:none;background:rgba(0,0,0,.3);color:#fff;font-size:15px}
-button{width:100%;height:53px;margin-top:12px;border:0;border-radius:16px;background:#fff;color:#000;font-weight:700;cursor:pointer}
-#error{display:none;margin-top:12px;color:#ff7777;font-size:13px}
-</style>
-</head>
-<body>
-<div class="login">
-<h1>SJEMAR Admin</h1>
-<p>Private administration panel.</p>
-<form id="loginForm">
-<input id="password" type="password" placeholder="Password" autocomplete="current-password" required>
-<button type="submit">Continue</button>
-<div id="error">Invalid password.</div>
-</form>
-</div>
+  res.send(
+    page(
+      "Admin",
+      `
+<main class="wrap">
+
+<section
+  id="login"
+  class="form"
+  style="max-width:500px"
+>
+
+  <div class="badge">
+    <span class="badge-dot"></span>
+    PRIVATE AREA
+  </div>
+
+  <h1
+    style="
+    font-size:48px;
+    letter-spacing:-.07em"
+  >
+    Admin
+  </h1>
+
+  <p style="color:#777">
+    Manage your websites.
+  </p>
+
+  <div class="field">
+
+    <label>
+      Password
+    </label>
+
+    <input
+      id="password"
+      type="password"
+    >
+
+  </div>
+
+  <div
+    id="loginNotice"
+    class="notice"
+  ></div>
+
+  <button
+    id="loginBtn"
+    class="btn primary"
+    style="width:100%"
+  >
+    SIGN IN
+  </button>
+
+</section>
+
+
+<section
+  id="dashboard"
+  style="
+  display:none;
+  padding:60px 0"
+>
+
+  <div
+    style="
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:15px;
+    margin-bottom:20px"
+  >
+
+    <div>
+
+      <div class="badge">
+        <span class="badge-dot"></span>
+        CONTROL CENTER
+      </div>
+
+      <h1
+        style="
+        font-size:44px;
+        letter-spacing:-.07em"
+      >
+        Websites
+      </h1>
+
+    </div>
+
+    <button
+      id="logout"
+      class="btn"
+    >
+      LOG OUT
+    </button>
+
+  </div>
+
+
+  <div class="card">
+
+    <h3>
+      Create Website
+    </h3>
+
+    <div class="field">
+
+      <label>
+        Title
+      </label>
+
+      <input
+        id="aTitle"
+        placeholder="Website title"
+      >
+
+    </div>
+
+    <div class="field">
+
+      <label>
+        Slug
+      </label>
+
+      <input
+        id="aSlug"
+        placeholder="website-name"
+      >
+
+    </div>
+
+    <div class="field">
+
+      <label>
+        HTML
+      </label>
+
+      <textarea
+        id="aHTML"
+        style="min-height:300px"
+      ></textarea>
+
+    </div>
+
+    <button
+      id="create"
+      class="btn primary"
+    >
+      CREATE WEBSITE
+    </button>
+
+    <div
+      id="adminNotice"
+      class="notice"
+    ></div>
+
+  </div>
+
+
+  <div
+    id="sites"
+    style="margin-top:15px"
+  ></div>
+
+</section>
+
+</main>
+`,
+      `
 <script>
-document.getElementById("loginForm").addEventListener("submit", async function(e){
-  e.preventDefault();
-  const password = document.getElementById("password").value;
-  try{
-    const response = await fetch("/api/admin/login", {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ password })
-    });
-    const data = await response.json();
-    if(data.success){
-      location.href = "/admin/dashboard";
-    }else{
-      document.getElementById("error").style.display = "block";
-    }
-  }catch(error){
-    document.getElementById("error").textContent = "Server error.";
-    document.getElementById("error").style.display = "block";
-  }
-});
-</script>
-</body>
-</html>`);
-});
 
-/* =========================================================
-   LOGIN API
-========================================================= */
+const login =
+  document.getElementById("login");
 
-app.post("/api/admin/login", (req, res) => {
-  const password = String(req.body.password || "");
-
-  if (password !== ADMIN_PASS) {
-    return res.status(401).json({
-      success: false,
-      error: "Invalid password",
-    });
-  }
-
-  const token = createToken();
-  res.setHeader(
-    "Set-Cookie",
-    COOKIE_NAME +
-      "=" +
-      encodeURIComponent(token) +
-      "; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400"
+const dashboard =
+  document.getElementById(
+    "dashboard"
   );
 
-  res.json({ success: true });
-});
-
-/* =========================================================
-   LOGOUT
-========================================================= */
-
-app.post("/api/admin/logout", adminOnly, (req, res) => {
-  res.setHeader(
-    "Set-Cookie",
-    COOKIE_NAME + "=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
+const password =
+  document.getElementById(
+    "password"
   );
-  res.json({ success: true });
-});
 
-/* =========================================================
-   ADMIN DASHBOARD
-========================================================= */
+const loginBtn =
+  document.getElementById(
+    "loginBtn"
+  );
 
-app.get("/admin/dashboard", adminOnly, (req, res) => {
-  res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SJEMAR Dashboard</title>
-<style>
-*{box-sizing:border-box}
-body{margin:0;background:#030407;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif}
-.wrap{width:min(1150px,calc(100% - 26px));margin:auto;padding:18px 0 70px}
-.top{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:17px 19px;border-radius:23px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.045);backdrop-filter:blur(25px)}
-.logo{font-weight:750}
-.logout,.btn{border:0;border-radius:13px;padding:11px 15px;cursor:pointer}
-.logout{background:rgba(255,255,255,.07);color:#fff}
-.primary{background:#fff;color:#000}
-.secondary{background:rgba(255,255,255,.07);color:#fff}
-.danger{background:rgba(255,60,60,.12);color:#ff8888}
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin-top:16px}
-.stat{padding:20px;border-radius:21px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.07)}
-.stat span{display:block;color:#747c8b;font-size:12px;margin-bottom:8px}
-.stat strong{font-size:28px}
-.panel{margin-top:16px;padding:20px;border-radius:24px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.07)}
-.toolbar{display:flex;gap:10px;flex-wrap:wrap}
-.search{flex:1;min-width:200px}
-input,textarea,select{width:100%;border-radius:14px;border:1px solid rgba(255,255,255,.08);background:rgba(0,0,0,.28);color:#fff;outline:none;padding:13px}
-.editor{display:none;margin-top:17px}
-.form-grid{display:grid;grid-template-columns:340px 1fr;gap:14px}
-textarea{min-height:450px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;line-height:1.5}
-.field{margin-bottom:11px}
-.actions{display:flex;gap:8px;flex-wrap:wrap}
-.sites{display:grid;gap:11px;margin-top:17px}
-.site{padding:18px;border-radius:20px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.065)}
-.site-title{font-weight:700}
-.site-url{margin-top:5px;color:#727b8a;font-size:12px;word-break:break-all}
-.site-description{margin-top:8px;color:#7e8796;font-size:13px}
-.site-actions{margin-top:14px;display:flex;gap:7px;flex-wrap:wrap}
-.site-actions button{font-size:12px}
-.badge{display:inline-block;margin-top:9px;padding:6px 9px;border-radius:999px;background:rgba(255,255,255,.06);color:#9ca4b2;font-size:11px}
-@media(max-width:800px){.stats{grid-template-columns:repeat(2,1fr)}.form-grid{grid-template-columns:1fr}}
-@media(max-width:500px){.stats{grid-template-columns:1fr}}
-</style>
-</head>
-<body>
-<div class="wrap">
-<div class="top">
-<div class="logo">SJEMAR Admin</div>
-<button class="logout" onclick="logout()">Logout</button>
-</div>
-<div class="stats" id="stats"></div>
-<div class="panel">
-<div class="toolbar">
-<input class="search" id="search" placeholder="Search websites">
-<button class="btn primary" onclick="createNew()">New Website</button>
-</div>
-<div class="editor" id="editor">
-<div class="form-grid">
-<div>
-<div class="field"><input id="title" placeholder="Website title"></div>
-<div class="field"><input id="slug" placeholder="Slug"></div>
-<div class="field"><input id="description" placeholder="Description"></div>
-<div class="field"><input id="favicon" placeholder="Favicon URL"></div>
-<div class="field">
-<select id="status">
-<option value="published">Published</option>
-<option value="draft">Draft</option>
-</select>
-</div>
-<div class="actions">
-<button class="btn primary" onclick="save()">Save</button>
-<button class="btn secondary" onclick="closeEditor()">Cancel</button>
-</div>
-</div>
-<div>
-<textarea id="html" placeholder="Complete HTML..."></textarea>
-</div>
-</div>
-</div>
-<div class="sites" id="sites"></div>
-</div>
-</div>
-<script>
-let sites = [];
-let editingId = null;
-const $ = id => document.getElementById(id);
+const loginNotice =
+  document.getElementById(
+    "loginNotice"
+  );
 
-async function request(url, options = {}){
-  const response = await fetch(url, options);
-  if(response.status === 401){
-    location.href = "/admin";
-    return null;
-  }
-  return response.json();
+const sites =
+  document.getElementById(
+    "sites"
+  );
+
+
+function msg(el,text){
+
+  el.textContent = text;
+
+  el.className =
+    "notice show";
+
 }
+
+
+async function api(
+  url,
+  options={}
+){
+
+  const r =
+    await fetch(
+      url,
+      options
+    );
+
+  const data =
+    await r.json();
+
+  if(!r.ok || !data.ok){
+
+    throw new Error(
+      data.error ||
+      "Request failed"
+    );
+
+  }
+
+  return data;
+
+}
+
+
+async function check(){
+
+  try{
+
+    await api(
+      "/api/admin/me"
+    );
+
+    login.style.display =
+      "none";
+
+    dashboard.style.display =
+      "block";
+
+    load();
+
+  }catch{
+
+    login.style.display =
+      "block";
+
+    dashboard.style.display =
+      "none";
+
+  }
+
+}
+
+
+loginBtn.onclick =
+  async () => {
+
+    try{
+
+      await api(
+        "/api/admin/login",
+        {
+          method:"POST",
+          headers:{
+            "Content-Type":
+              "application/json"
+          },
+          body:JSON.stringify({
+            password:
+              password.value
+          })
+        }
+      );
+
+      password.value = "";
+
+      check();
+
+    }catch(error){
+
+      msg(
+        loginNotice,
+        error.message
+      );
+
+    }
+
+  };
+
+
+password.onkeydown =
+  e => {
+
+    if(e.key === "Enter")
+      loginBtn.click();
+
+  };
+
+
+document.getElementById(
+  "logout"
+).onclick =
+  async () => {
+
+    await api(
+      "/api/admin/logout",
+      {
+        method:"POST"
+      }
+    );
+
+    check();
+
+  };
+
+
+document.getElementById(
+  "create"
+).onclick =
+  async () => {
+
+    const button =
+      document.getElementById(
+        "create"
+      );
+
+    try{
+
+      button.disabled = true;
+
+      await api(
+        "/api/admin/sites",
+        {
+          method:"POST",
+          headers:{
+            "Content-Type":
+              "application/json"
+          },
+          body:JSON.stringify({
+
+            title:
+              document.getElementById(
+                "aTitle"
+              ).value,
+
+            slug:
+              document.getElementById(
+                "aSlug"
+              ).value,
+
+            html:
+              document.getElementById(
+                "aHTML"
+              ).value
+
+          })
+        }
+      );
+
+      document.getElementById(
+        "aTitle"
+      ).value = "";
+
+      document.getElementById(
+        "aSlug"
+      ).value = "";
+
+      document.getElementById(
+        "aHTML"
+      ).value = "";
+
+      msg(
+        document.getElementById(
+          "adminNotice"
+        ),
+        "Website created."
+      );
+
+      load();
+
+    }catch(error){
+
+      msg(
+        document.getElementById(
+          "adminNotice"
+        ),
+        error.message
+      );
+
+    }finally{
+
+      button.disabled = false;
+
+    }
+
+  };
+
 
 async function load(){
-  const data = await request("/api/admin/sites");
-  if(!data) return;
-  sites = data.sites || [];
-  drawStats();
-  drawSites();
+
+  try{
+
+    const data =
+      await api(
+        "/api/admin/sites"
+      );
+
+    if(!data.sites.length){
+
+      sites.innerHTML = `
+        <div class="card">
+          <h3>No websites</h3>
+          <p>
+            Create your first website.
+          </p>
+        </div>
+      `;
+
+      return;
+
+    }
+
+
+    sites.innerHTML =
+      data.sites
+        .map(
+          site => `
+
+<div
+  class="card"
+  style="margin-bottom:12px"
+>
+
+  <div class="card-top">
+
+    <div>
+
+      <h3
+        style="margin:0"
+      >
+        ${esc(site.title)}
+      </h3>
+
+      <p>
+        /site/${esc(site.slug)}
+      </p>
+
+    </div>
+
+    <span class="pill">
+      ${
+        site.published
+          ? "PUBLISHED"
+          : "HIDDEN"
+      }
+    </span>
+
+  </div>
+
+
+  <div
+    class="actions"
+    style="
+    justify-content:flex-start"
+  >
+
+    <a
+      class="btn"
+      target="_blank"
+      href="/site/${encodeURIComponent(
+        site.slug
+      )}"
+    >
+      VIEW
+    </a>
+
+    <button
+      class="btn"
+      onclick="toggleSite(
+        '${site.id}'
+      )"
+    >
+      ${
+        site.published
+          ? "UNPUBLISH"
+          : "PUBLISH"
+      }
+    </button>
+
+    <button
+      class="btn"
+      onclick="deleteSite(
+        '${site.id}'
+      )"
+    >
+      DELETE
+    </button>
+
+  </div>
+
+  <p>
+    Views:
+    ${Number(site.views || 0)}
+  </p>
+
+</div>
+
+`
+        )
+        .join("");
+
+  }catch(error){
+
+    sites.innerHTML =
+      `
+      <div class="card">
+        ${esc(error.message)}
+      </div>
+      `;
+
+  }
+
 }
 
-function drawStats(){
-  const total = sites.length;
-  const published = sites.filter(x => x.status === "published").length;
-  const draft = total - published;
-  const html = sites.reduce((sum,x) => sum + Number(x.htmlSize || 0), 0);
 
-  $("stats").innerHTML = \`
-<div class="stat"><span>Total</span><strong>\${total}</strong></div>
-<div class="stat"><span>Published</span><strong>\${published}</strong></div>
-<div class="stat"><span>Draft</span><strong>\${draft}</strong></div>
-<div class="stat"><span>HTML Storage</span><strong>\${formatSize(html)}</strong></div>
-\`;
+async function toggleSite(id){
+
+  await api(
+    "/api/admin/sites/" +
+    id +
+    "/toggle",
+    {
+      method:"PATCH"
+    }
+  );
+
+  load();
+
 }
 
-function formatSize(bytes){
-  if(bytes < 1024) return bytes + " B";
-  if(bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+
+async function deleteSite(id){
+
+  if(
+    !confirm(
+      "Delete this website permanently?"
+    )
+  ){
+    return;
+  }
+
+  await api(
+    "/api/admin/sites/" +
+    id,
+    {
+      method:"DELETE"
+    }
+  );
+
+  load();
+
 }
 
-function safe(value){
+
+function esc(value){
+
   return String(value || "")
     .replace(/&/g,"&amp;")
     .replace(/</g,"&lt;")
     .replace(/>/g,"&gt;")
     .replace(/"/g,"&quot;")
     .replace(/'/g,"&#039;");
+
 }
 
-function drawSites(){
-  const query = $("search").value.toLowerCase().trim();
-  const filtered = sites.filter(site =>
-    site.title.toLowerCase().includes(query) ||
-    site.slug.toLowerCase().includes(query)
-  );
 
-  if(!filtered.length){
-    $("sites").innerHTML = \`<div class="site">No websites found.</div>\`;
-    return;
-  }
+check();
 
-  $("sites").innerHTML = filtered.map(site => \`
-<div class="site">
-<div class="site-title">\${safe(site.title)}</div>
-<div class="site-url">/site/\${safe(site.slug)}</div>
-<div class="site-description">\${safe(site.description)}</div>
-<div class="badge">\${safe(site.status)}</div>
-<div class="site-actions">
-<button class="btn secondary" onclick="preview('\${site.id}')">Preview</button>
-<button class="btn secondary" onclick="edit('\${site.id}')">Edit</button>
-<button class="btn secondary" onclick="toggle('\${site.id}')">
-  \${site.status === "published" ? "Unpublish" : "Publish"}
-</button>
-<button class="btn danger" onclick="removeSite('\${site.id}')">Delete</button>
-</div>
-</div>
-\`).join("");
-}
-
-$("search").addEventListener("input", drawSites);
-
-function createNew(){
-  editingId = null;
-  $("editor").style.display = "block";
-  $("title").value = "";
-  $("slug").value = "";
-  $("description").value = "";
-  $("favicon").value = "";
-  $("status").value = "published";
-  $("html").value = "<!DOCTYPE html>\\n<html lang=\\"en\\">\\n<head>\\n<meta charset=\\"UTF-8\\">\\n<title>My Website</title>\\n</head>\\n<body>\\n<h1>Hello World</h1>\\n</body>\\n</html>";
-  window.scrollTo({ top: 0, behavior: "smooth" });
-}
-
-function edit(id){
-  const site = sites.find(x => x.id === id);
-  if(!site) return;
-  editingId = id;
-  $("editor").style.display = "block";
-  $("title").value = site.title || "";
-  $("slug").value = site.slug || "";
-  $("description").value = site.description || "";
-  $("favicon").value = site.favicon || "";
-  $("status").value = site.status || "draft";
-  $("html").value = site.html || "";
-  window.scrollTo({ top: 0, behavior: "smooth" });
-}
-
-function closeEditor(){
-  editingId = null;
-  $("editor").style.display = "none";
-}
-
-async function save(){
-  const payload = {
-    title: $("title").value.trim(),
-    slug: $("slug").value.trim(),
-    description: $("description").value.trim(),
-    favicon: $("favicon").value.trim(),
-    status: $("status").value,
-    html: $("html").value
-  };
-
-  if(!payload.title || !payload.slug || !payload.html){
-    alert("Title, slug and HTML are required.");
-    return;
-  }
-
-  let data;
-  if(editingId){
-    data = await request("/api/admin/sites/" + encodeURIComponent(editingId), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-  }else{
-    data = await request("/api/admin/sites", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-  }
-
-  if(data && data.success){
-    closeEditor();
-    await load();
-  }else{
-    alert(data?.error || "Could not save website.");
-  }
-}
-
-async function toggle(id){
-  const site = sites.find(x => x.id === id);
-  if(!site) return;
-  const status = site.status === "published" ? "draft" : "published";
-  const data = await request("/api/admin/sites/" + encodeURIComponent(id), {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ status })
-  });
-  if(data && data.success) await load();
-}
-
-function preview(id){
-  const site = sites.find(x => x.id === id);
-  if(!site) return;
-  window.open("/site/" + encodeURIComponent(site.slug), "_blank");
-}
-
-async function removeSite(id){
-  if(!confirm("Delete this website permanently?")) return;
-  const data = await request("/api/admin/sites/" + encodeURIComponent(id), {
-    method: "DELETE"
-  });
-  if(data && data.success) await load();
-}
-
-async function logout(){
-  await fetch("/api/admin/logout", { method: "POST" });
-  location.href = "/admin";
-}
-
-load();
 </script>
-</body>
-</html>`);
-});
-
-/* =========================================================
-   ADMIN API - LIST
-========================================================= */
-
-app.get("/api/admin/sites", adminOnly, (req, res) => {
-  const db = readDB();
-  const sites = db.sites.map((site) => ({
-    id: site.id,
-    title: site.title,
-    slug: site.slug,
-    description: site.description || "",
-    favicon: site.favicon || "",
-    status: site.status || "draft",
-    html: site.html || "",
-    htmlSize: Buffer.byteLength(site.html || "", "utf8"),
-    createdAt: site.createdAt,
-    updatedAt: site.updatedAt,
-  }));
-
-  res.json({ success: true, sites });
-});
-
-/* =========================================================
-   CREATE
-========================================================= */
-
-app.post("/api/admin/sites", adminOnly, (req, res) => {
-  const title = String(req.body.title || "").trim();
-  const slug = slugify(req.body.slug);
-  const description = String(req.body.description || "").trim().slice(0, 500);
-  const favicon = String(req.body.favicon || "").trim().slice(0, 1000);
-  const status = req.body.status === "published" ? "published" : "draft";
-  const html = String(req.body.html || "");
-
-  if (!title || title.length > 120) {
-    return res.status(400).json({ success: false, error: "Invalid title." });
-  }
-
-  if (!validSlug(slug)) {
-    return res.status(400).json({ success: false, error: "Invalid slug." });
-  }
-
-  if (!validHTML(html)) {
-    return res.status(400).json({ success: false, error: "HTML is empty or too large." });
-  }
-
-  const db = readDB();
-
-  if (db.sites.some((site) => site.slug === slug)) {
-    return res.status(409).json({ success: false, error: "This slug is already in use." });
-  }
-
-  const now = new Date().toISOString();
-  const site = {
-    id: id(),
-    title,
-    slug,
-    description,
-    favicon,
-    status,
-    html,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  db.sites.push(site);
-  saveDB(db);
-
-  res.json({ success: true, site });
-});
-
-/* =========================================================
-   UPDATE
-========================================================= */
-
-app.put("/api/admin/sites/:id", adminOnly, (req, res) => {
-  const db = readDB();
-  const site = db.sites.find((x) => x.id === req.params.id);
-
-  if (!site) {
-    return res.status(404).json({ success: false, error: "Website not found." });
-  }
-
-  if (req.body.title !== undefined) {
-    const title = String(req.body.title).trim();
-    if (!title || title.length > 120) {
-      return res.status(400).json({ success: false, error: "Invalid title." });
-    }
-    site.title = title;
-  }
-
-  if (req.body.slug !== undefined) {
-    const slug = slugify(req.body.slug);
-    if (!validSlug(slug)) {
-      return res.status(400).json({ success: false, error: "Invalid slug." });
-    }
-
-    const duplicate = db.sites.some((x) => x.id !== site.id && x.slug === slug);
-    if (duplicate) {
-      return res.status(409).json({ success: false, error: "This slug is already in use." });
-    }
-    site.slug = slug;
-  }
-
-  if (req.body.description !== undefined) {
-    site.description = String(req.body.description).slice(0, 500);
-  }
-
-  if (req.body.favicon !== undefined) {
-    site.favicon = String(req.body.favicon).slice(0, 1000);
-  }
-
-  if (req.body.status !== undefined) {
-    site.status = req.body.status === "published" ? "published" : "draft";
-  }
-
-  if (req.body.html !== undefined) {
-    const html = String(req.body.html);
-    if (!validHTML(html)) {
-      return res.status(400).json({ success: false, error: "HTML is empty or too large." });
-    }
-    site.html = html;
-  }
-
-  site.updatedAt = new Date().toISOString();
-  saveDB(db);
-
-  res.json({ success: true, site });
-});
-
-/* =========================================================
-   DELETE
-========================================================= */
-
-app.delete("/api/admin/sites/:id", adminOnly, (req, res) => {
-  const db = readDB();
-  const index = db.sites.findIndex((x) => x.id === req.params.id);
-
-  if (index === -1) {
-    return res.status(404).json({ success: false, error: "Website not found." });
-  }
-
-  db.sites.splice(index, 1);
-  saveDB(db);
-
-  res.json({ success: true });
-});
-
-/* =========================================================
-   PUBLIC HOSTED SITE
-========================================================= */
-
-app.get("/site/:slug", (req, res) => {
-  const slug = String(req.params.slug || "").toLowerCase();
-  const db = readDB();
-  const site = db.sites.find((x) => x.slug === slug);
-
-  if (!site || site.status !== "published") {
-    return res.status(404).send(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>404</title><style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#030407;color:white;font-family:system-ui;text-align:center}p{color:#777}</style></head>
-<body><div><h1>404</h1><p>Website not found.</p></div></body></html>`);
-  }
-
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache");
-  res.send(site.html);
-});
-
-/* =========================================================
-   SHORT PUBLIC URL
-========================================================= */
-
-app.get("/:slug", (req, res, next) => {
-  const reserved = ["admin", "api", "site", "robots.txt", "favicon.ico"];
-
-  if (reserved.includes(req.params.slug)) {
-    return next();
-  }
-
-  const slug = String(req.params.slug || "").toLowerCase();
-  const db = readDB();
-  const site = db.sites.find((x) => x.slug === slug && x.status === "published");
-
-  if (!site) {
-    return next();
-  }
-
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(site.html);
+`
+    )
+  );
 });
 
 /* =========================================================
    ROBOTS
 ========================================================= */
 
-app.get("/robots.txt", (req, res) => {
-  res.type("text/plain");
-  res.send("User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/\n");
-});
+app.get(
+  "/robots.txt",
+  (req, res) => {
+
+    res.type("text/plain");
+
+    res.send(
+`User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api/admin
+`
+    );
+
+  }
+);
 
 /* =========================================================
    404
 ========================================================= */
 
-app.use((req, res) => {
-  if (req.path.startsWith("/api/")) {
-    return res.status(404).json({ success: false, error: "Endpoint not found." });
+function notFound(text){
+
+  return page(
+    "404",
+    `
+<main class="hero">
+
+  <div class="wrap">
+
+    <div class="badge">
+      <span class="badge-dot"></span>
+      404
+    </div>
+
+    <h1>
+      Not found.
+    </h1>
+
+    <p>
+      ${escapeHTML(text)}
+    </p>
+
+    <div class="actions">
+
+      <a
+        href="/"
+        class="btn primary"
+      >
+        HOME
+      </a>
+
+      <a
+        href="/create"
+        class="btn"
+      >
+        CREATE
+      </a>
+
+    </div>
+
+  </div>
+
+</main>
+`
+  );
+
+}
+
+
+app.use(
+  (req, res) => {
+
+    res.status(404)
+      .send(
+        notFound(
+          "The page does not exist."
+        )
+      );
+
   }
-
-  res.status(404).send(`<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>404</title><style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#030407;color:#fff;font-family:system-ui;text-align:center}h1{font-size:70px;margin:0}p{color:#777}</style></head>
-<body><div><h1>404</h1><p>The requested page was not found.</p></div></body></html>`);
-});
+);
 
 /* =========================================================
-   ERROR HANDLER
+   ERROR
 ========================================================= */
 
-app.use((err, req, res, next) => {
-  console.error("Unhandled error:", err);
-  if (res.headersSent) return next(err);
-  res.status(500).json({ success: false, error: "Internal server error." });
-});
+app.use(
+  (err, req, res, next) => {
+
+    console.error(err);
+
+    if(res.headersSent)
+      return next(err);
+
+    res.status(500)
+      .send(
+        notFound(
+          "Server error."
+        )
+      );
+
+  }
+);
 
 /* =========================================================
-   START SERVER
+   START
 ========================================================= */
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("SJEMAR Hosting Engine started on port:", PORT);
-});
+app.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
+
+    console.log(
+      "SJEMAR Hosting started"
+    );
+
+    console.log(
+      "PORT:",
+      PORT
+    );
+
+    console.log(
+      "HOME: /"
+    );
+
+    console.log(
+      "CREATE: /create"
+    );
+
+    console.log(
+      "ADMIN: /admin"
+    );
+
+  }
+);
