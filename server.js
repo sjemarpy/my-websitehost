@@ -1,27 +1,22 @@
 const express = require('express');
+const bodyParser = require('body-parser');
 const https = require('https');
-const os = require('os');
-const crypto = require('crypto');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-app.use(express.urlencoded({ limit: '100mb', extended: true }));
-app.use(express.json({ limit: '100mb' }));
+app.use(bodyParser.urlencoded({ limit: '100mb', extended: true }));
+app.use(bodyParser.json({ limit: '100mb' }));
 
 const FIREBASE_DB_URL = "https://sifatby-38886-default-rtdb.firebaseio.com";
 const ADMIN_PASS = "py.py.php";
 
-// ------------------------------------------
-// ১. ফায়ারবেস REST API হেল্পার
-// ------------------------------------------
-function firebaseFetch(path, method = 'GET', data = null) {
+// Helper function to fetch Firebase via REST API
+function firebaseFetch(url, method = 'GET', data = null) {
   return new Promise((resolve, reject) => {
-    const cleanPath = path.startsWith('/') ? path : `/${path}`;
-    const url = new URL(`${FIREBASE_DB_URL}${cleanPath}.json`);
+    const parsedUrl = new URL(url);
     const options = {
-      hostname: url.hostname,
-      path: url.pathname + (url.search || ''),
+      hostname: parsedUrl.hostname,
+      path: parsedUrl.pathname + (parsedUrl.search || ''),
       method: method,
       headers: { 'Content-Type': 'application/json' }
     };
@@ -31,9 +26,9 @@ function firebaseFetch(path, method = 'GET', data = null) {
       res.on('data', chunk => body += chunk);
       res.on('end', () => {
         try {
-          resolve({ status: res.statusCode, data: body ? JSON.parse(body) : null });
+          resolve(body ? JSON.parse(body) : null);
         } catch (e) {
-          resolve({ status: res.statusCode, data: body });
+          resolve(body);
         }
       });
     });
@@ -44,578 +39,285 @@ function firebaseFetch(path, method = 'GET', data = null) {
   });
 }
 
-// ------------------------------------------
-// ২. ব্যাকএন্ড API ও অ্যাডমিন টাস্ক রাউটস
-// ------------------------------------------
-
-// অ্যাডমিন অথেন্টিকেশন
-app.post('/api/admin/login', (req, res) => {
-  const { password } = req.body;
-  if (password === ADMIN_PASS) {
-    const token = crypto.createHash('sha256').update(ADMIN_PASS + Date.now()).digest('hex');
-    return res.json({ success: true, token });
-  }
-  return res.status(401).json({ success: false, message: 'Invalid Admin Password!' });
-});
-
-// সিস্টেম মেট্রিক্স
-app.get('/api/system/metrics', (req, res) => {
-  const mem = process.memoryUsage();
-  res.json({
-    uptime: Math.floor(process.uptime()),
-    heapRam: (mem.heapUsed / 1024 / 1024).toFixed(2) + ' MB',
-    totalRam: (os.totalmem() / 1024 / 1024 / 1024).toFixed(2) + ' GB',
-    cpuCores: os.cpus().length
-  });
-});
-
-// টাস্ক তৈরি (Admin Task)
-app.post('/api/admin/tasks/create', async (req, res) => {
-  try {
-    const { title, reward, description, type } = req.body;
-    const taskId = 'task_' + Date.now();
-    const taskData = { id: taskId, title, reward, description, type, createdAt: new Date().toISOString() };
-    
-    await firebaseFetch(`/tasks/${taskId}`, 'PUT', taskData);
-    res.json({ success: true, task: taskData });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// টাস্ক লিস্ট ফেচ
-app.get('/api/tasks/list', async (req, res) => {
-  try {
-    const result = await firebaseFetch('/tasks', 'GET');
-    const tasks = result.data ? Object.values(result.data) : [];
-    res.json({ success: true, tasks });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// টাস্ক ডিলিট (Admin Task)
-app.post('/api/admin/tasks/delete', async (req, res) => {
-  try {
-    const { taskId } = req.body;
-    await firebaseFetch(`/tasks/${taskId}`, 'DELETE');
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// ইউজার টাস্ক সাবমিট
-app.post('/api/user/task/submit', async (req, res) => {
-  try {
-    const { taskId, username, proof } = req.body;
-    const submissionId = 'sub_' + Date.now();
-    const data = { submissionId, taskId, username, proof, status: 'PENDING', time: new Date().toLocaleTimeString() };
-    
-    await firebaseFetch(`/submissions/${submissionId}`, 'PUT', data);
-    res.json({ success: true, message: 'Submission sent for review' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// ফায়ারবেস ব্যাকআপ এক্সপোর্ট
-app.get('/api/admin/export', async (req, res) => {
-  const result = await firebaseFetch('/', 'GET');
-  res.setHeader('Content-disposition', 'attachment; filename=database_backup.json');
-  res.setHeader('Content-type', 'application/json');
-  res.send(JSON.stringify(result.data, null, 2));
-});
-
-// ------------------------------------------
-// ৩. ইউজার ইন্টারফেস (User App Page: '/')
-// ------------------------------------------
+// ==========================================
+// ১. ইউজার ও অ্যাডমিন পেজ (OLED Pitch Black + Pure SVG)
+// ==========================================
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!DOCTYPE html>
 <html lang="bn">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>SJEMAR Cloud Client</title>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>SJEMAR Cloud Engine</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
   <style>
     :root {
       --bg: #000000;
-      --card-bg: rgba(14, 14, 18, 0.85);
+      --card-bg: rgba(10, 10, 14, 0.8);
       --card-border: rgba(255, 255, 255, 0.08);
       --accent: #2563EB;
       --accent-glow: rgba(37, 99, 235, 0.35);
       --text: #FFFFFF;
       --text-muted: #71717A;
       --text-sub: #A1A1AA;
+      --border-subtle: rgba(255, 255, 255, 0.05);
+      --danger: #EF4444;
       --success: #10B981;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
-    body { background: #000000; color: var(--text); min-height: 100vh; padding-bottom: 90px; }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Plus Jakarta Sans", sans-serif; -webkit-tap-highlight-color: transparent; }
+    body { background: #000000 !important; color: var(--text); min-height: 100vh; padding-bottom: 110px; overflow-x: hidden; position: relative; }
 
-    /* Pure SVG Common Classes */
-    .icon { width: 20px; height: 20px; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; display: inline-block; vertical-align: middle; }
-    .icon-sm { width: 16px; height: 16px; }
+    .header { position: sticky; top: 0; z-index: 40; backdrop-filter: blur(35px); -webkit-backdrop-filter: blur(35px); background: rgba(0, 0, 0, 0.85); border-bottom: 1px solid var(--card-border); padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; }
+    .brand-wrap { display: flex; align-items: center; gap: 10px; }
+    .brand-logo { width: 32px; height: 32px; border-radius: 10px; background: linear-gradient(135deg, #2563EB, #7C3AED); display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px var(--accent-glow); }
+    .brand-logo svg { width: 18px; height: 18px; stroke: #fff; stroke-width: 2.5; fill: none; }
+    .brand-title { font-size: 17px; font-weight: 800; letter-spacing: -0.4px; color: #FFFFFF; }
+    .status-badge { font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 16px; background: rgba(37,99,235,0.12); color: #60A5FA; border: 1px solid rgba(37,99,235,0.3); display: flex; align-items: center; gap: 6px; }
+    .pulse-dot { width: 6px; height: 6px; border-radius: 50%; background: #3B82F6; box-shadow: 0 0 8px #3B82F6; animation: pulse 1.8s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
-    /* Header */
-    .header { position: sticky; top: 0; z-index: 40; backdrop-filter: blur(25px); background: rgba(0, 0, 0, 0.9); border-bottom: 1px solid var(--card-border); padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; }
-    .brand-wrap { display: flex; align-items: center; gap: 12px; }
-    .brand-logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, #2563EB, #7C3AED); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px var(--accent-glow); }
-    .brand-logo svg { stroke: #fff; width: 18px; height: 18px; }
-    .brand-title { font-size: 16px; font-weight: 800; letter-spacing: -0.3px; }
+    .container { max-width: 480px; margin: 0 auto; padding: 18px 14px; position: relative; z-index: 10; }
+    .tab-view { display: none; }
+    .tab-view.active { display: block; animation: oledSlide 0.25s cubic-bezier(0.16, 1, 0.3, 1); }
+    @keyframes oledSlide { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
-    /* 3-Line Hamburger Menu Button */
-    .hamburger-btn { background: rgba(255,255,255,0.06); border: 1px solid var(--card-border); padding: 8px; border-radius: 10px; cursor: pointer; color: #fff; display: flex; align-items: center; justify-content: center; }
+    .glass-card { background: var(--card-bg); backdrop-filter: blur(40px); -webkit-backdrop-filter: blur(40px); border: 1px solid var(--card-border); border-radius: 22px; padding: 18px; margin-bottom: 16px; box-shadow: 0 20px 45px rgba(0,0,0,0.95); }
+    .card-head { font-size: 15px; font-weight: 800; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; color: #FFFFFF; }
+    .card-head svg { width: 18px; height: 18px; stroke-width: 2.2; flex-shrink: 0; stroke: currentColor; fill: none; }
+    .card-sub { font-size: 12px; color: var(--text-sub); margin-bottom: 16px; line-height: 1.4; }
 
-    /* Side Drawer Menu */
-    .drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(6px); z-index: 90; display: none; }
-    .drawer-backdrop.show { display: block; }
-    .drawer { position: fixed; top: 0; right: -280px; width: 280px; height: 100%; background: #08080A; border-left: 1px solid var(--card-border); z-index: 100; transition: 0.3s cubic-bezier(0.16, 1, 0.3, 1); padding: 24px 18px; display: flex; flex-direction: column; justify-content: space-between; }
-    .drawer.open { right: 0; }
-    .drawer-link { display: flex; align-items: center; gap: 12px; padding: 12px 14px; color: var(--text-sub); text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 14px; margin-bottom: 8px; transition: 0.2s; }
-    .drawer-link:hover, .drawer-link.active { background: rgba(255,255,255,0.06); color: #fff; }
+    .form-group { margin-bottom: 13px; }
+    .form-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; display: block; }
+    .glass-input, .glass-textarea, .glass-select { width: 100%; background: #000000; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 14px; padding: 13px 14px; color: #FFFFFF; font-size: 13px; outline: none; transition: 0.2s; }
+    .glass-input:focus, .glass-textarea:focus, .glass-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+    .glass-textarea { font-family: 'JetBrains Mono', monospace; font-size: 12px; resize: vertical; min-height: 80px; }
 
-    .container { max-width: 480px; margin: 0 auto; padding: 18px 14px; }
-    
-    /* Cards */
-    .glass-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 20px; padding: 18px; margin-bottom: 14px; box-shadow: 0 15px 35px rgba(0,0,0,0.9); }
-    .card-head { font-size: 15px; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; background: rgba(255,255,255,0.02); border-radius: 14px; border: 1px solid var(--border-subtle); margin-bottom: 10px; }
+    .toggle-text-title { font-size: 12px; font-weight: 600; color: #FFFFFF; }
+    .toggle-text-desc { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
 
-    /* Form Elements */
-    .glass-input, .glass-textarea { width: 100%; background: #050507; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 12px 14px; color: #FFFFFF; font-size: 13px; outline: none; margin-bottom: 10px; }
-    .glass-input:focus, .glass-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+    /* Custom OLED Toggle Switch */
+    .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(255,255,255,0.1); transition: .3s; border-radius: 24px; border: 1px solid rgba(255,255,255,0.15); }
+    .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
+    input:checked + .slider { background-color: var(--accent); }
+    input:checked + .slider:before { transform: translateX(20px); }
 
-    .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 12px 16px; border-radius: 12px; font-size: 13px; font-weight: 700; cursor: pointer; border: none; gap: 8px; transition: 0.2s; }
-    .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 4px 15px var(--accent-glow); }
+    /* Buttons */
+    .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 13px 18px; border-radius: 14px; font-size: 13px; font-weight: 700; cursor: pointer; border: none; transition: 0.2s; gap: 8px; }
+    .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 4px 20px var(--accent-glow); }
     .btn-primary:active { transform: scale(0.98); }
+    .btn-secondary { background: rgba(255,255,255,0.05); color: #fff; border: 1px solid var(--card-border); }
 
-    /* Task Item Card */
-    .task-card { background: #050508; border: 1px solid var(--card-border); border-radius: 16px; padding: 14px; margin-bottom: 10px; }
-    .task-title { font-size: 14px; font-weight: 700; color: #fff; margin-bottom: 4px; }
-    .task-reward { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; color: var(--success); }
-
-    /* Toast */
-    #toast-box { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); z-index: 120; pointer-events: none; }
-    .toast { background: #121218; border: 1px solid var(--card-border); color: #fff; padding: 10px 18px; border-radius: 30px; font-size: 12px; font-weight: 600; box-shadow: 0 10px 25px rgba(0,0,0,0.8); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+    /* Bottom Navigation Bar */
+    .bottom-nav { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); width: calc(100% - 32px); max-width: 440px; background: rgba(12, 12, 16, 0.85); backdrop-filter: blur(35px); -webkit-backdrop-filter: blur(35px); border: 1px solid var(--card-border); border-radius: 24px; display: flex; padding: 6px; z-index: 50; box-shadow: 0 15px 35px rgba(0,0,0,0.9); }
+    .nav-btn { flex: 1; padding: 10px 0; background: transparent; border: none; color: var(--text-muted); font-size: 10px; font-weight: 700; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; border-radius: 18px; transition: 0.2s; }
+    .nav-btn svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2.2; }
+    .nav-btn.active { color: #FFFFFF; background: rgba(255,255,255,0.08); }
   </style>
 </head>
 <body>
 
-  <div id="toast-box"></div>
-
-  <!-- Side Drawer Menu -->
-  <div class="drawer-backdrop" id="drawerBackdrop" onclick="toggleDrawer()"></div>
-  <div class="drawer" id="drawerMenu">
-    <div>
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
-        <span style="font-size:16px; font-weight:800;">Navigation</span>
-        <button class="hamburger-btn" onclick="toggleDrawer()">
-          <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
-        </button>
-      </div>
-      <a href="/" class="drawer-link active">
-        <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-        User Portal
-      </a>
-      <a href="/admin" class="drawer-link">
-        <svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        Admin Panel
-      </a>
-    </div>
-    <div style="font-size:11px; color:var(--text-muted); text-align:center;">SJEMAR Engine v2.0</div>
-  </div>
-
-  <!-- Header with SVG Hamburger Button -->
+  <!-- Header with Live Pulse Badge -->
   <header class="header">
     <div class="brand-wrap">
       <div class="brand-logo">
         <svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       </div>
-      <div>
-        <div class="brand-title">SJEMAR Client</div>
-      </div>
+      <div class="brand-title">SJEMAR Cloud</div>
     </div>
-    <!-- 3-Line Nav Button -->
-    <button class="hamburger-btn" onclick="toggleDrawer()">
-      <svg class="icon" viewBox="0 0 24 24">
-        <line x1="3" y1="6" x2="21" y2="6"/>
-        <line x1="3" y1="12" x2="21" y2="12"/>
-        <line x1="3" y1="18" x2="21" y2="18"/>
-      </svg>
-    </button>
+    <div class="status-badge">
+      <div class="pulse-dot"></div>
+      <span>CONNECTED</span>
+    </div>
   </header>
 
   <div class="container">
 
-    <!-- Active Tasks Stream -->
-    <div class="glass-card">
-      <div class="card-head">
-        <div style="display:flex; align-items:center; gap:8px;">
-          <svg class="icon" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-          <span>Available Tasks</span>
+    <!-- ট্যাব ১: ক্লাউড ইঞ্জিন / ইউজার ভিউ -->
+    <div id="tab-engine" class="tab-view active">
+      <div class="glass-card">
+        <div class="card-head">
+          <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+          <span>Realtime Node Engine</span>
         </div>
-        <button class="btn" style="width:auto; padding:4px 10px; font-size:11px; background:rgba(255,255,255,0.06);" onclick="loadUserTasks()">
-          <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-        </button>
-      </div>
-      <div id="tasks-container">
-        <div style="text-align:center; font-size:12px; color:var(--text-muted); padding:16px;">Loading tasks...</div>
-      </div>
-    </div>
+        <div class="card-sub">ফায়ারবেস ডাটাবেজ নোড রিড ও রাইট কন্ট্রোল।</div>
 
-    <!-- Submit Task Proof -->
-    <div class="glass-card">
-      <div class="card-head">
-        <div style="display:flex; align-items:center; gap:8px;">
-          <svg class="icon" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-          <span>Submit Task Proof</span>
+        <div class="form-group">
+          <label class="form-label">Node Path</label>
+          <input type="text" id="node-path" class="glass-input" value="configs/app_status" placeholder="e.g. app/settings">
         </div>
-      </div>
-      <input type="text" id="sub-task-id" class="glass-input" placeholder="Task ID (e.g. task_1700...)">
-      <input type="text" id="sub-username" class="glass-input" placeholder="Your Username">
-      <textarea id="sub-proof" class="glass-textarea" placeholder="Enter proof / link / details..."></textarea>
-      <button class="btn btn-primary" onclick="submitTaskProof()">
-        <svg class="icon icon-sm" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-        Submit Task
-      </button>
-    </div>
 
-  </div>
-
-  <script>
-    function toggleDrawer() {
-      document.getElementById('drawerBackdrop').classList.toggle('show');
-      document.getElementById('drawerMenu').classList.toggle('open');
-    }
-
-    function showToast(text) {
-      if (navigator.vibrate) navigator.vibrate([25]);
-      const box = document.getElementById('toast-box');
-      const t = document.createElement('div');
-      t.className = 'toast';
-      t.innerHTML = text;
-      box.appendChild(t);
-      setTimeout(() => t.remove(), 2500);
-    }
-
-    async function loadUserTasks() {
-      try {
-        const res = await fetch('/api/tasks/list');
-        const data = await res.json();
-        const container = document.getElementById('tasks-container');
-        if (!data.tasks || data.tasks.length === 0) {
-          container.innerHTML = '<div style="text-align:center; font-size:12px; color:var(--text-muted); padding:16px;">No tasks available right now.</div>';
-          return;
-        }
-        container.innerHTML = data.tasks.map(t => \`
-          <div class="task-card">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <div class="task-title">\${t.title}</div>
-              <div class="task-reward">\${t.reward || 'Free'}</div>
-            </div>
-            <div style="font-size:11px; color:var(--text-sub); margin:4px 0;">\${t.description || ''}</div>
-            <div style="font-size:10px; color:var(--text-muted); font-family:'JetBrains Mono',monospace;">ID: \${t.id}</div>
-          </div>
-        \`).join('');
-      } catch (err) {
-        showToast('Failed to load tasks');
-      }
-    }
-
-    async function submitTaskProof() {
-      const taskId = document.getElementById('sub-task-id').value;
-      const username = document.getElementById('sub-username').value;
-      const proof = document.getElementById('sub-proof').value;
-
-      if (!taskId || !username || !proof) return showToast('Please fill all fields');
-
-      const res = await fetch('/api/user/task/submit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskId, username, proof })
-      });
-      const data = await res.json();
-      if (data.success) {
-        showToast('Task Submitted Successfully!');
-        document.getElementById('sub-task-id').value = '';
-        document.getElementById('sub-username').value = '';
-        document.getElementById('sub-proof').value = '';
-      }
-    }
-
-    loadUserTasks();
-  </script>
-</body>
-</html>`);
-});
-
-// ------------------------------------------
-// ৪. অ্যাডমিন ড্যাশবোর্ড (Admin HQ: '/admin')
-// ------------------------------------------
-app.get('/admin', (req, res) => {
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(`<!DOCTYPE html>
-<html lang="bn">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>SJEMAR Admin HQ</title>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg: #000000;
-      --card-bg: rgba(14, 14, 18, 0.9);
-      --card-border: rgba(255, 255, 255, 0.08);
-      --accent: #7C3AED;
-      --accent-glow: rgba(124, 58, 237, 0.35);
-      --text: #FFFFFF;
-      --text-muted: #71717A;
-      --text-sub: #A1A1AA;
-      --danger: #EF4444;
-      --success: #10B981;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
-    body { background: #000000; color: var(--text); min-height: 100vh; padding-bottom: 90px; }
-
-    .icon { width: 18px; height: 18px; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; display: inline-block; vertical-align: middle; }
-    .icon-sm { width: 14px; height: 14px; }
-
-    .header { position: sticky; top: 0; z-index: 40; backdrop-filter: blur(25px); background: rgba(0, 0, 0, 0.9); border-bottom: 1px solid var(--card-border); padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; }
-    .brand-wrap { display: flex; align-items: center; gap: 10px; }
-    .brand-logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, #7C3AED, #2563EB); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px var(--accent-glow); }
-    .brand-logo svg { stroke: #fff; width: 18px; height: 18px; }
-
-    .hamburger-btn { background: rgba(255,255,255,0.06); border: 1px solid var(--card-border); padding: 8px; border-radius: 10px; cursor: pointer; color: #fff; }
-
-    .container { max-width: 500px; margin: 0 auto; padding: 18px 14px; }
-    .glass-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 20px; padding: 18px; margin-bottom: 14px; }
-    .card-head { font-size: 15px; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; }
-
-    .glass-input, .glass-textarea { width: 100%; background: #050507; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; padding: 12px 14px; color: #FFFFFF; font-size: 13px; outline: none; margin-bottom: 10px; }
-    
-    .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; padding: 12px 16px; border-radius: 12px; font-size: 13px; font-weight: 700; cursor: pointer; border: none; gap: 8px; }
-    .btn-accent { background: var(--accent); color: #fff; box-shadow: 0 4px 15px var(--accent-glow); }
-    .btn-danger { background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
-
-    /* Stats */
-    .stat-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-    .stat-box { background: #060608; border: 1px solid var(--card-border); border-radius: 14px; padding: 12px; }
-    .stat-num { font-size: 16px; font-weight: 800; font-family: 'JetBrains Mono', monospace; color: #fff; margin-top: 4px; }
-
-    /* Drawer */
-    .drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(6px); z-index: 90; display: none; }
-    .drawer-backdrop.show { display: block; }
-    .drawer { position: fixed; top: 0; right: -280px; width: 280px; height: 100%; background: #08080A; border-left: 1px solid var(--card-border); z-index: 100; transition: 0.3s cubic-bezier(0.16, 1, 0.3, 1); padding: 24px 18px; }
-    .drawer.open { right: 0; }
-    .drawer-link { display: flex; align-items: center; gap: 12px; padding: 12px 14px; color: var(--text-sub); text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 14px; margin-bottom: 8px; }
-    .drawer-link.active { background: rgba(255,255,255,0.06); color: #fff; }
-
-    /* Auth lock screen */
-    #auth-screen { position: fixed; inset: 0; background: #000; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 20px; }
-  </style>
-</head>
-<body>
-
-  <!-- Admin Login Auth Modal -->
-  <div id="auth-screen">
-    <div class="glass-card" style="width:100%; max-width:360px;">
-      <div style="text-align:center; margin-bottom:18px;">
-        <div class="brand-logo" style="margin:0 auto 12px;">
-          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <div class="form-group">
+          <label class="form-label">Data Payload</label>
+          <textarea id="node-data" class="glass-textarea" placeholder='{"status": true, "version": "2.4.0"}'></textarea>
         </div>
-        <div style="font-size:16px; font-weight:800;">Admin HQ Access</div>
-        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Enter Master Password</div>
-      </div>
-      <input type="password" id="admin-pass-input" class="glass-input" placeholder="Password (py.py.php)">
-      <button class="btn btn-accent" onclick="authenticateAdmin()">
-        <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-        Unlock Panel
-      </button>
-    </div>
-  </div>
 
-  <!-- Drawer Menu -->
-  <div class="drawer-backdrop" id="adminBackdrop" onclick="toggleAdminDrawer()"></div>
-  <div class="drawer" id="adminDrawer">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
-      <span style="font-size:16px; font-weight:800;">Admin Navigation</span>
-      <button class="hamburger-btn" onclick="toggleAdminDrawer()">
-        <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
-      </button>
-    </div>
-    <a href="/" class="drawer-link">
-      <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-      User Portal
-    </a>
-    <a href="/admin" class="drawer-link active">
-      <svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-      Admin Panel
-    </a>
-    <a href="/api/admin/export" class="drawer-link" style="margin-top:20px; color:#60A5FA;">
-      <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      Export DB Backup
-    </a>
-  </div>
-
-  <!-- Header -->
-  <header class="header">
-    <div class="brand-wrap">
-      <div class="brand-logo">
-        <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-      </div>
-      <div>
-        <div class="brand-title">Admin Task Hub</div>
-      </div>
-    </div>
-    <button class="hamburger-btn" onclick="toggleAdminDrawer()">
-      <svg class="icon" viewBox="0 0 24 24">
-        <line x1="3" y1="6" x2="21" y2="6"/>
-        <line x1="3" y1="12" x2="21" y2="12"/>
-        <line x1="3" y1="18" x2="21" y2="18"/>
-      </svg>
-    </button>
-  </header>
-
-  <div class="container">
-    
-    <!-- Live Server Metrics -->
-    <div class="stat-row">
-      <div class="stat-box">
-        <div style="font-size:11px; color:var(--text-muted);">RAM Heap</div>
-        <div class="stat-num" id="adm-ram">0 MB</div>
-      </div>
-      <div class="stat-box">
-        <div style="font-size:11px; color:var(--text-muted);">Uptime</div>
-        <div class="stat-num" id="adm-uptime">0s</div>
-      </div>
-    </div>
-
-    <!-- Create New Task Form -->
-    <div class="glass-card">
-      <div class="card-head">
-        <div style="display:flex; align-items:center; gap:8px;">
-          <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          <span>Create User Task</span>
-        </div>
-      </div>
-      <input type="text" id="task-title" class="glass-input" placeholder="Task Title (e.g. Subscribe Channel)">
-      <input type="text" id="task-reward" class="glass-input" placeholder="Reward / Points (e.g. 50 BDT / $0.50)">
-      <textarea id="task-desc" class="glass-textarea" placeholder="Detailed instruction for users..."></textarea>
-      <button class="btn btn-accent" onclick="publishAdminTask()">
-        <svg class="icon icon-sm" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-        Publish Task to Database
-      </button>
-    </div>
-
-    <!-- Active Tasks Manager -->
-    <div class="glass-card">
-      <div class="card-head">
-        <span>Manage Published Tasks</span>
-        <button class="btn" style="width:auto; padding:4px 8px; font-size:11px; background:rgba(255,255,255,0.06);" onclick="fetchAdminTasks()">Refresh</button>
-      </div>
-      <div id="admin-task-list">Loading tasks...</div>
-    </div>
-
-  </div>
-
-  <script>
-    function toggleAdminDrawer() {
-      document.getElementById('adminBackdrop').classList.toggle('show');
-      document.getElementById('adminDrawer').classList.toggle('open');
-    }
-
-    async function authenticateAdmin() {
-      const password = document.getElementById('admin-pass-input').value;
-      const res = await fetch('/api/admin/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password })
-      });
-      const data = await res.json();
-      if (data.success) {
-        document.getElementById('auth-screen').style.display = 'none';
-        initAdminMetrics();
-        fetchAdminTasks();
-      } else {
-        alert('Wrong Password!');
-      }
-    }
-
-    async function initAdminMetrics() {
-      try {
-        const res = await fetch('/api/system/metrics');
-        const data = await res.json();
-        document.getElementById('adm-ram').innerText = data.heapRam;
-        document.getElementById('adm-uptime').innerText = data.uptime + 's';
-      } catch (e) {}
-      setTimeout(initAdminMetrics, 3000);
-    }
-
-    async function publishAdminTask() {
-      const title = document.getElementById('task-title').value;
-      const reward = document.getElementById('task-reward').value;
-      const description = document.getElementById('task-desc').value;
-
-      if (!title) return alert('Task Title is required');
-
-      const res = await fetch('/api/admin/tasks/create', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, reward, description })
-      });
-      const data = await res.json();
-      if (data.success) {
-        document.getElementById('task-title').value = '';
-        document.getElementById('task-reward').value = '';
-        document.getElementById('task-desc').value = '';
-        fetchAdminTasks();
-      }
-    }
-
-    async function deleteAdminTask(taskId) {
-      if (!confirm('Are you sure you want to delete this task?')) return;
-      await fetch('/api/admin/tasks/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskId })
-      });
-      fetchAdminTasks();
-    }
-
-    async function fetchAdminTasks() {
-      const res = await fetch('/api/tasks/list');
-      const data = await res.json();
-      const list = document.getElementById('admin-task-list');
-
-      if (!data.tasks || data.tasks.length === 0) {
-        list.innerHTML = '<div style="font-size:12px; color:var(--text-muted); text-align:center;">No tasks found</div>';
-        return;
-      }
-
-      list.innerHTML = data.tasks.map(t => \`
-        <div style="background:#050508; border:1px solid var(--card-border); border-radius:12px; padding:12px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
-          <div>
-            <div style="font-size:13px; font-weight:700; color:#fff;">\${t.title}</div>
-            <div style="font-size:11px; color:#10B981;">\${t.reward || ''}</div>
-          </div>
-          <button class="btn btn-danger" style="width:auto; padding:6px 10px; font-size:11px;" onclick="deleteAdminTask('\${t.id}')">
-            <svg class="icon icon-sm" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn btn-secondary" onclick="readFirebaseData()">
+            <svg style="width:16px; height:16px; stroke:currentColor; fill:none;" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            Fetch
+          </button>
+          <button class="btn btn-primary" onclick="writeFirebaseData()">
+            <svg style="width:16px; height:16px; stroke:currentColor; fill:none;" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Save
           </button>
         </div>
-      \`).join('');
+      </div>
+
+      <!-- Settings Switches -->
+      <div class="glass-card">
+        <div class="card-head">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span>Cloud Configuration</span>
+        </div>
+        <div class="card-sub">অটোমেটিক সিঙ্ক এবং ক্লাউড অপ্টিমাইজেশন।</div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-text-title">SSL HTTPS Bypass</div>
+            <div class="toggle-text-desc">এনক্রিপ্টেড টানেলের মাধ্যমে হাই-স্পিড ডেটা রিড</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-text-title">Auto JSON Parser</div>
+            <div class="toggle-text-desc">ইনকামিং পে-লোড অটোমেটিক রূপান্তর</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- ট্যাব ২: কনসোল লগ ভিউ -->
+    <div id="tab-logs" class="tab-view">
+      <div class="glass-card">
+        <div class="card-head">
+          <svg viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          <span>Terminal Response</span>
+        </div>
+        <div class="card-sub">সার্ভার আউটপুট ও রেসপন্স ডাটা।</div>
+        <pre id="output-box" style="font-family:'JetBrains Mono', monospace; font-size:11px; background:#000; border:1px solid var(--border-subtle); padding:14px; border-radius:14px; color:#A1A1AA; max-height:260px; overflow:auto; word-break:break-all;">System initialized and listening on port...</pre>
+      </div>
+    </div>
+
+    <!-- ট্যাব ৩: অ্যাডমিন ও অথেন্টিকেশন -->
+    <div id="tab-admin" class="tab-view">
+      <div class="glass-card">
+        <div class="card-head">
+          <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          <span>Admin Security Gateway</span>
+        </div>
+        <div class="card-sub">মাস্টার পাসওয়ার্ড দিয়ে প্রটেক্টেড।</div>
+
+        <div class="form-group">
+          <label class="form-label">Master Password</label>
+          <input type="password" id="admin-pass" class="glass-input" placeholder="Enter master pass">
+        </div>
+
+        <button class="btn btn-primary" onclick="verifyAdmin()">Authenticate</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Bottom Navigation Bar with Pure SVG -->
+  <nav class="bottom-nav">
+    <button class="nav-btn active" onclick="switchNav('tab-engine', this)">
+      <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+      <span>Engine</span>
+    </button>
+    <button class="nav-btn" onclick="switchNav('tab-logs', this)">
+      <svg viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+      <span>Logs</span>
+    </button>
+    <button class="nav-btn" onclick="switchNav('tab-admin', this)">
+      <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <span>Admin</span>
+    </button>
+  </nav>
+
+  <script>
+    function switchNav(tabId, el) {
+      document.querySelectorAll('.tab-view').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById(tabId).classList.add('active');
+      if (el) el.classList.add('active');
+    }
+
+    async function readFirebaseData() {
+      const node = document.getElementById('node-path').value;
+      const box = document.getElementById('output-box');
+      box.innerText = 'Fetching node data...';
+      try {
+        const res = await fetch('/api/fetch?node=' + encodeURIComponent(node));
+        const data = await res.json();
+        box.innerText = JSON.stringify(data, null, 2);
+      } catch (e) {
+        box.innerText = 'Error: ' + e.message;
+      }
+    }
+
+    async function writeFirebaseData() {
+      const node = document.getElementById('node-path').value;
+      const raw = document.getElementById('node-data').value;
+      const box = document.getElementById('output-box');
+      box.innerText = 'Writing to node...';
+      try {
+        let payload = raw;
+        try { payload = JSON.parse(raw); } catch(err) {}
+        const res = await fetch('/api/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ node, payload })
+        });
+        const data = await res.json();
+        box.innerText = JSON.stringify(data, null, 2);
+      } catch (e) {
+        box.innerText = 'Error: ' + e.message;
+      }
+    }
+
+    function verifyAdmin() {
+      const pass = document.getElementById('admin-pass').value;
+      if (pass === "${ADMIN_PASS}") {
+        alert('Admin Access Granted!');
+      } else {
+        alert('Invalid Password!');
+      }
     }
   </script>
 </body>
 </html>`);
 });
 
-// সার্ভার স্টার্ট
+// REST Endpoints for frontend requests
+app.get('/api/fetch', async (req, res) => {
+  const node = req.query.node || '';
+  const result = await firebaseFetch(`${FIREBASE_DB_URL}/${node}.json`, 'GET');
+  res.json({ success: true, data: result });
+});
+
+app.post('/api/save', async (req, res) => {
+  const { node, payload } = req.body;
+  const result = await firebaseFetch(`${FIREBASE_DB_URL}/${node}.json`, 'PUT', payload);
+  res.json({ success: true, data: result });
+});
+
+// Server Listen
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`=========================================`);
-  console.log(`⚡ SJEMAR Engine Ready!`);
-  console.log(`👤 User Portal: http://localhost:${PORT}/`);
-  console.log(`🛠️ Admin Portal: http://localhost:${PORT}/admin`);
-  console.log(`🔑 Admin Pass: ${ADMIN_PASS}`);
-  console.log(`=========================================`);
+  console.log(`SJEMAR Cloud Engine Live: http://localhost:${PORT}`);
 });
