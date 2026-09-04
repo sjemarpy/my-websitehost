@@ -1,7 +1,7 @@
 {
   "name": "sjemar-hosting-engine",
   "version": "2.0.0",
-  "description": "SJEMAR Web Hosting Engine",
+  "description": "SJEMAR Web Engine with Firebase",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
