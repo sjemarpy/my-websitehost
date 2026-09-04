@@ -9,32 +9,34 @@ const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_PASS = process.env.ADMIN_PASS || "py.py.php";
 
 const DATA_DIR = path.join(__dirname, "data");
-const DATA_FILE = path.join(DATA_DIR, "pages.json");
+const DATA_FILE = path.join(DATA_DIR, "database.json");
 
-const MAX_HTML = 10 * 1024 * 1024;
+const MAX_BODY_LIMIT = "25mb";
 
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 
-app.use(express.json({ limit: "12mb" }));
-app.use(express.urlencoded({ extended: true, limit: "12mb" }));
+app.use(express.json({ limit: MAX_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: MAX_BODY_LIMIT }));
 
-/* =========================
-   DATABASE SAFELY INITIALIZED
-========================= */
+/* =========================================================
+   DATABASE INITIALIZATION & HANDLERS
+========================================================= */
+
+const defaultDB = {
+  sites: [],
+  notes: [],
+  posts: [],
+  images: []
+};
 
 function initDB() {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-
     if (!fs.existsSync(DATA_FILE)) {
-      fs.writeFileSync(
-        DATA_FILE,
-        JSON.stringify({ sites: [] }, null, 2),
-        "utf8"
-      );
+      fs.writeFileSync(DATA_FILE, JSON.stringify(defaultDB, null, 2), "utf8");
     }
   } catch (err) {
     console.error("DB Init Error:", err);
@@ -46,22 +48,24 @@ function getDB() {
     initDB();
     if (fs.existsSync(DATA_FILE)) {
       const raw = fs.readFileSync(DATA_FILE, "utf8");
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return {
+        sites: Array.isArray(parsed.sites) ? parsed.sites : [],
+        notes: Array.isArray(parsed.notes) ? parsed.notes : [],
+        posts: Array.isArray(parsed.posts) ? parsed.posts : [],
+        images: Array.isArray(parsed.images) ? parsed.images : []
+      };
     }
   } catch (err) {
     console.error("DB Read Error:", err);
   }
-  return { sites: [] };
+  return { ...defaultDB };
 }
 
 function saveDB(db) {
   try {
     initDB();
-    fs.writeFileSync(
-      DATA_FILE,
-      JSON.stringify(db || { sites: [] }, null, 2),
-      "utf8"
-    );
+    fs.writeFileSync(DATA_FILE, JSON.stringify(db || defaultDB, null, 2), "utf8");
   } catch (err) {
     console.error("DB Save Error:", err);
   }
@@ -69,23 +73,20 @@ function saveDB(db) {
 
 initDB();
 
-/* =========================
-   HELPERS
-========================= */
+/* =========================================================
+   HELPERS & UTILS
+========================================================= */
 
-function id() {
-  return crypto.randomBytes(12).toString("hex");
+function genId(len = 12) {
+  return crypto.randomBytes(len).toString("hex");
 }
 
-function secret() {
+function genSecret() {
   return crypto.randomBytes(32).toString("hex");
 }
 
 function hash(value) {
-  return crypto
-    .createHash("sha256")
-    .update(String(value))
-    .digest("hex");
+  return crypto.createHash("sha256").update(String(value)).digest("hex");
 }
 
 function slugify(value) {
@@ -94,18 +95,18 @@ function slugify(value) {
     .trim()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 50);
+    .slice(0, 60);
 }
 
 function validSlug(value) {
-  return /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/.test(value);
+  return /^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/.test(value);
 }
 
-function cleanTitle(value) {
+function cleanText(value, max = 100) {
   return String(value || "")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 80);
+    .slice(0, max);
 }
 
 function escapeHTML(value) {
@@ -128,40 +129,36 @@ function getCookie(req, name) {
   return null;
 }
 
-/* =========================
-   ADMIN SESSION
-========================= */
+/* =========================================================
+   ADMIN SESSION & AUTH
+========================================================= */
 
 const sessions = new Map();
 
 function adminLogged(req) {
-  const token = getCookie(req, "sj_admin");
+  const token = getCookie(req, "sj_admin_token");
   if (!token) return false;
 
   const session = sessions.get(token);
   if (!session) return false;
 
-  if (Date.now() - session.created > 7 * 24 * 60 * 60 * 1000) {
+  if (Date.now() - session.created > 14 * 24 * 60 * 60 * 1000) {
     sessions.delete(token);
     return false;
   }
-
   return true;
 }
 
 function requireAdmin(req, res, next) {
   if (!adminLogged(req)) {
-    return res.status(401).json({
-      ok: false,
-      error: "Unauthorized"
-    });
+    return res.status(401).json({ ok: false, error: "Unauthorized access" });
   }
   next();
 }
 
-/* =========================
-   SECURITY
-========================= */
+/* =========================================================
+   GLOBAL SECURITY HEADERS
+========================================================= */
 
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -174,373 +171,11 @@ app.use((req, res, next) => {
     );
     res.setHeader("Cache-Control", "no-store");
   }
-
   next();
 });
 
 /* =========================================================
-   PUBLIC HTML -> LINK
-========================================================= */
-
-app.post("/api/publish", (req, res) => {
-  try {
-    const title = cleanTitle(req.body.title);
-    const html = req.body.html;
-    let slug = slugify(req.body.slug || title);
-
-    if (!title) {
-      return res.status(400).json({
-        ok: false,
-        error: "Website title is required"
-      });
-    }
-
-    if (typeof html !== "string" || !html.trim()) {
-      return res.status(400).json({
-        ok: false,
-        error: "HTML is required"
-      });
-    }
-
-    if (Buffer.byteLength(html, "utf8") > MAX_HTML) {
-      return res.status(400).json({
-        ok: false,
-        error: "HTML maximum size is 10MB"
-      });
-    }
-
-    if (!slug) {
-      slug = "site-" + crypto.randomBytes(4).toString("hex");
-    }
-
-    if (!validSlug(slug)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Invalid URL slug"
-      });
-    }
-
-    const db = getDB();
-
-    if (db.sites && db.sites.some((site) => site.slug === slug)) {
-      return res.status(409).json({
-        ok: false,
-        error: "URL already exists"
-      });
-    }
-
-    const editKey = secret();
-
-    const site = {
-      id: id(),
-      title,
-      slug,
-      html,
-      editKey: hash(editKey),
-      published: true,
-      views: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-
-    if (!Array.isArray(db.sites)) {
-      db.sites = [];
-    }
-
-    db.sites.unshift(site);
-    saveDB(db);
-
-    const protocol = req.headers["x-forwarded-proto"] || req.protocol;
-    const host = req.get("host");
-
-    res.json({
-      ok: true,
-      site: {
-        id: site.id,
-        title: site.title,
-        slug: site.slug,
-        url: `${protocol}://${host}/site/${site.slug}`,
-        editKey
-      }
-    });
-  } catch (err) {
-    console.error("Publish error:", err);
-    res.status(500).json({
-      ok: false,
-      error: "Publish failed"
-    });
-  }
-});
-
-/* =========================================================
-   PUBLIC SITE
-========================================================= */
-
-app.get("/site/:slug", (req, res) => {
-  try {
-    const db = getDB();
-    const site = (db.sites || []).find((x) => x.slug === req.params.slug);
-
-    if (!site || site.published === false) {
-      return res.status(404).send(notFound("Website not found"));
-    }
-
-    site.views = Number(site.views || 0) + 1;
-    saveDB(db);
-
-    res.type("html").send(site.html);
-  } catch (err) {
-    console.error("Error serving site:", err);
-    res.status(500).send(notFound("Failed to render site"));
-  }
-});
-
-/* =========================================================
-   ADMIN LOGIN
-========================================================= */
-
-app.post("/api/admin/login", (req, res) => {
-  const password = String(req.body.password || "");
-
-  if (password !== ADMIN_PASS) {
-    return res.status(401).json({
-      ok: false,
-      error: "Wrong password"
-    });
-  }
-
-  const token = secret();
-  sessions.set(token, { created: Date.now() });
-
-  res.cookie("sj_admin", token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-    path: "/"
-  });
-
-  res.json({ ok: true });
-});
-
-app.post("/api/admin/logout", (req, res) => {
-  const token = getCookie(req, "sj_admin");
-  if (token) {
-    sessions.delete(token);
-  }
-
-  res.clearCookie("sj_admin", {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    path: "/"
-  });
-
-  res.json({ ok: true });
-});
-
-/* =========================================================
-   ADMIN API
-========================================================= */
-
-app.get("/api/admin/me", requireAdmin, (req, res) => {
-  res.json({ ok: true });
-});
-
-app.get("/api/admin/sites", requireAdmin, (req, res) => {
-  const db = getDB();
-  res.json({
-    ok: true,
-    sites: (db.sites || []).map((site) => ({
-      id: site.id,
-      title: site.title,
-      slug: site.slug,
-      published: site.published !== false,
-      views: Number(site.views || 0),
-      createdAt: site.createdAt,
-      updatedAt: site.updatedAt
-    }))
-  });
-});
-
-app.get("/api/admin/sites/:id", requireAdmin, (req, res) => {
-  const db = getDB();
-  const site = (db.sites || []).find((x) => x.id === req.params.id);
-
-  if (!site) {
-    return res.status(404).json({
-      ok: false,
-      error: "Site not found"
-    });
-  }
-
-  res.json({
-    ok: true,
-    site: {
-      id: site.id,
-      title: site.title,
-      slug: site.slug,
-      html: site.html,
-      published: site.published !== false,
-      views: Number(site.views || 0)
-    }
-  });
-});
-
-app.post("/api/admin/sites", requireAdmin, (req, res) => {
-  try {
-    const title = cleanTitle(req.body.title);
-    const html = req.body.html;
-    let slug = slugify(req.body.slug || title);
-
-    if (!title || !html) {
-      return res.status(400).json({
-        ok: false,
-        error: "Title and HTML are required"
-      });
-    }
-
-    if (Buffer.byteLength(html, "utf8") > MAX_HTML) {
-      return res.status(400).json({
-        ok: false,
-        error: "HTML is too large"
-      });
-    }
-
-    if (!slug) {
-      slug = "site-" + crypto.randomBytes(4).toString("hex");
-    }
-
-    if (!validSlug(slug)) {
-      return res.status(400).json({
-        ok: false,
-        error: "Invalid slug"
-      });
-    }
-
-    const db = getDB();
-
-    if ((db.sites || []).some((x) => x.slug === slug)) {
-      return res.status(409).json({
-        ok: false,
-        error: "Slug already exists"
-      });
-    }
-
-    const site = {
-      id: id(),
-      title,
-      slug,
-      html,
-      editKey: hash(secret()),
-      published: true,
-      views: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-
-    if (!Array.isArray(db.sites)) db.sites = [];
-    db.sites.unshift(site);
-    saveDB(db);
-
-    res.json({
-      ok: true,
-      site: {
-        id: site.id,
-        title: site.title,
-        slug: site.slug
-      }
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      ok: false,
-      error: "Create failed"
-    });
-  }
-});
-
-app.put("/api/admin/sites/:id", requireAdmin, (req, res) => {
-  const db = getDB();
-  const site = (db.sites || []).find((x) => x.id === req.params.id);
-
-  if (!site) {
-    return res.status(404).json({
-      ok: false,
-      error: "Site not found"
-    });
-  }
-
-  const title = cleanTitle(req.body.title);
-  const html = req.body.html;
-
-  if (!title || !html) {
-    return res.status(400).json({
-      ok: false,
-      error: "Title and HTML are required"
-    });
-  }
-
-  if (Buffer.byteLength(html, "utf8") > MAX_HTML) {
-    return res.status(400).json({
-      ok: false,
-      error: "HTML is too large"
-    });
-  }
-
-  site.title = title;
-  site.html = html;
-
-  if (typeof req.body.published === "boolean") {
-    site.published = req.body.published;
-  }
-
-  site.updatedAt = new Date().toISOString();
-  saveDB(db);
-
-  res.json({ ok: true });
-});
-
-app.patch("/api/admin/sites/:id/toggle", requireAdmin, (req, res) => {
-  const db = getDB();
-  const site = (db.sites || []).find((x) => x.id === req.params.id);
-
-  if (!site) {
-    return res.status(404).json({
-      ok: false,
-      error: "Site not found"
-    });
-  }
-
-  site.published = site.published === false;
-  site.updatedAt = new Date().toISOString();
-  saveDB(db);
-
-  res.json({
-    ok: true,
-    published: site.published
-  });
-});
-
-app.delete("/api/admin/sites/:id", requireAdmin, (req, res) => {
-  const db = getDB();
-  const oldLength = (db.sites || []).length;
-
-  db.sites = (db.sites || []).filter((x) => x.id !== req.params.id);
-
-  if (db.sites.length === oldLength) {
-    return res.status(404).json({
-      ok: false,
-      error: "Site not found"
-    });
-  }
-
-  saveDB(db);
-  res.json({ ok: true });
-});
-
-/* =========================================================
-   HOME PAGE (UI / DESIGN 100% UNCHANGED)
+   BASE UI TEMPLATE
 ========================================================= */
 
 function page(title, content, script = "") {
@@ -550,80 +185,47 @@ function page(title, content, script = "") {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#000000">
-
-<title>${escapeHTML(title)} — SJEMAR</title>
-
+<title>${escapeHTML(title)} — SJEMAR CLOUD</title>
 <style>
-*{
-  box-sizing:border-box;
-}
-
-html{
-  background:#000;
-}
-
+*{box-sizing:border-box}
+html{background:#000}
 body{
   margin:0;
-  background:
-    radial-gradient(
-      circle at 50% -10%,
-      rgba(255,255,255,.10),
-      transparent 35%
-    ),
-    #000;
+  background:radial-gradient(circle at 50% -20%, rgba(255,255,255,.12), transparent 45%), #000;
   color:#fff;
-  font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    "SF Pro Display",
-    Inter,
-    Arial,
-    sans-serif;
+  font-family:-apple-system, BlinkMacSystemFont, "SF Pro Display", Inter, Arial, sans-serif;
   -webkit-font-smoothing:antialiased;
+  min-height:100vh;
+  display:flex;
+  flex-direction:column;
 }
-
-a{
-  color:inherit;
-  text-decoration:none;
-}
-
-button,
-input,
-textarea{
-  font:inherit;
-}
-
+a{color:inherit;text-decoration:none}
+button,input,textarea,select{font:inherit}
 .nav{
   position:sticky;
   top:0;
   z-index:100;
-  border-bottom:
-    1px solid rgba(255,255,255,.07);
-  background:
-    rgba(0,0,0,.72);
-  backdrop-filter:
-    blur(25px);
-  -webkit-backdrop-filter:
-    blur(25px);
+  border-bottom:1px solid rgba(255,255,255,.08);
+  background:rgba(0,0,0,.75);
+  backdrop-filter:blur(25px);
+  -webkit-backdrop-filter:blur(25px);
 }
-
 .nav-inner{
-  width:min(1120px,calc(100% - 28px));
+  width:min(1140px,calc(100% - 30px));
   height:68px;
   margin:auto;
   display:flex;
   align-items:center;
   justify-content:space-between;
 }
-
 .logo{
   display:flex;
   align-items:center;
   gap:10px;
   font-weight:800;
   letter-spacing:-.04em;
+  font-size:18px;
 }
-
 .logo-box{
   width:34px;
   height:34px;
@@ -632,429 +234,277 @@ textarea{
   border-radius:11px;
   background:#fff;
   color:#000;
-  font-size:13px;
+  font-weight:900;
 }
-
-.nav-menu{
-  display:flex;
-  gap:5px;
-}
-
+.nav-menu{display:flex;gap:6px;align-items:center}
 .nav-menu a{
-  color:#999;
-  padding:10px 13px;
+  color:#888;
+  padding:8px 14px;
   border-radius:12px;
+  font-size:14px;
+  font-weight:500;
+  transition:.2s;
 }
-
-.nav-menu a:hover{
+.nav-menu a:hover, .nav-menu a.active{
   color:#fff;
-  background:
-    rgba(255,255,255,.07);
+  background:rgba(255,255,255,.08);
 }
-
 .wrap{
-  width:min(1120px,calc(100% - 28px));
+  width:min(1140px,calc(100% - 30px));
   margin:auto;
 }
-
 .hero{
-  padding:
-    105px 0 70px;
+  padding:85px 0 50px;
   text-align:center;
 }
-
 .badge{
   display:inline-flex;
   align-items:center;
   gap:8px;
-  padding:
-    8px 13px;
-  border:
-    1px solid rgba(255,255,255,.11);
+  padding:7px 14px;
+  border:1px solid rgba(255,255,255,.12);
   border-radius:999px;
-  background:
-    rgba(255,255,255,.045);
+  background:rgba(255,255,255,.05);
   color:#aaa;
   font-size:12px;
-  backdrop-filter:
-    blur(15px);
+  backdrop-filter:blur(15px);
 }
-
 .badge-dot{
   width:7px;
   height:7px;
   border-radius:50%;
   background:#fff;
-  box-shadow:
-    0 0 14px #fff;
+  box-shadow:0 0 12px #fff;
 }
-
 .hero h1{
-  margin:
-    24px auto 15px;
-  max-width:850px;
-  font-size:
-    clamp(48px,9vw,92px);
-  line-height:.92;
-  letter-spacing:-.075em;
+  margin:20px auto 14px;
+  max-width:880px;
+  font-size:clamp(40px, 8vw, 84px);
+  line-height:.95;
+  letter-spacing:-.07em;
 }
-
 .hero p{
-  max-width:650px;
+  max-width:620px;
   margin:auto;
-  color:#999;
-  line-height:1.7;
+  color:#888;
+  line-height:1.65;
   font-size:16px;
 }
-
 .actions{
   margin-top:28px;
   display:flex;
   justify-content:center;
   flex-wrap:wrap;
-  gap:9px;
+  gap:10px;
 }
-
 .btn{
-  min-height:45px;
-  padding:
-    0 18px;
+  min-height:44px;
+  padding:0 18px;
   display:inline-flex;
   align-items:center;
   justify-content:center;
-  border-radius:14px;
-  border:
-    1px solid rgba(255,255,255,.11);
-  background:
-    rgba(255,255,255,.055);
+  border-radius:13px;
+  border:1px solid rgba(255,255,255,.12);
+  background:rgba(255,255,255,.06);
   color:#fff;
   cursor:pointer;
+  font-size:13px;
+  font-weight:600;
   transition:.2s;
+  gap:6px;
 }
-
 .btn:hover{
   transform:translateY(-2px);
-  background:
-    rgba(255,255,255,.10);
+  background:rgba(255,255,255,.12);
 }
-
 .btn.primary{
   color:#000;
   background:#fff;
   border-color:#fff;
   font-weight:700;
 }
-
-.section{
-  padding:
-    30px 0 75px;
+.btn.danger{
+  background:rgba(255,50,50,.15);
+  border-color:rgba(255,50,50,.3);
+  color:#ff6b6b;
 }
-
-.section-head{
-  margin-bottom:20px;
+.btn.danger:hover{
+  background:rgba(255,50,50,.25);
 }
-
-.section-head h2{
-  margin:0;
-  font-size:29px;
-  letter-spacing:-.05em;
-}
-
-.section-head p{
-  margin:
-    7px 0 0;
-  color:#777;
-}
-
+.section{padding:30px 0 65px}
+.section-head{margin-bottom:22px}
+.section-head h2{margin:0;font-size:28px;letter-spacing:-.05em}
+.section-head p{margin:6px 0 0;color:#777;font-size:14px}
 .grid{
   display:grid;
-  grid-template-columns:
-    repeat(3,1fr);
-  gap:13px;
+  grid-template-columns:repeat(3, 1fr);
+  gap:14px;
 }
-
+.grid-4{
+  display:grid;
+  grid-template-columns:repeat(4, 1fr);
+  gap:14px;
+}
 .card{
   position:relative;
   overflow:hidden;
-  padding:24px;
-  min-height:210px;
-  border:
-    1px solid rgba(255,255,255,.09);
-  border-radius:25px;
-  background:
-    linear-gradient(
-      145deg,
-      rgba(255,255,255,.075),
-      rgba(255,255,255,.025)
-    );
-  backdrop-filter:
-    blur(25px);
-  -webkit-backdrop-filter:
-    blur(25px);
-  box-shadow:
-    0 25px 70px
-    rgba(0,0,0,.45);
+  padding:22px;
+  border:1px solid rgba(255,255,255,.09);
+  border-radius:24px;
+  background:linear-gradient(145deg, rgba(255,255,255,.07), rgba(255,255,255,.02));
+  backdrop-filter:blur(25px);
+  box-shadow:0 25px 70px rgba(0,0,0,.5);
   transition:.25s;
 }
-
-.card:before{
-  content:"";
-  position:absolute;
-  width:170px;
-  height:170px;
-  right:-80px;
-  top:-90px;
-  border-radius:50%;
-  background:
-    rgba(255,255,255,.035);
-  filter:blur(20px);
-}
-
 .card:hover{
-  transform:
-    translateY(-4px);
-  border-color:
-    rgba(255,255,255,.17);
+  transform:translateY(-4px);
+  border-color:rgba(255,255,255,.18);
 }
-
 .card-top{
   display:flex;
   justify-content:space-between;
   align-items:center;
 }
-
 .icon{
-  width:43px;
-  height:43px;
+  width:40px;
+  height:40px;
   display:grid;
   place-items:center;
-  border-radius:14px;
-  border:
-    1px solid rgba(255,255,255,.10);
-  background:
-    rgba(255,255,255,.065);
+  border-radius:13px;
+  border:1px solid rgba(255,255,255,.10);
+  background:rgba(255,255,255,.06);
   font-size:11px;
   font-weight:800;
 }
-
 .pill{
-  padding:
-    6px 9px;
-  border:
-    1px solid rgba(255,255,255,.09);
+  padding:5px 10px;
+  border:1px solid rgba(255,255,255,.09);
   border-radius:999px;
-  color:#999;
-  font-size:10px;
-}
-
-.card h3{
-  margin:
-    28px 0 8px;
-  font-size:21px;
-  letter-spacing:-.035em;
-}
-
-.card p{
-  margin:0;
   color:#888;
-  line-height:1.55;
-  font-size:14px;
+  font-size:11px;
 }
-
-.view{
-  display:inline-flex;
-  margin-top:19px;
-  font-size:12px;
-  font-weight:700;
-}
-
-.feature{
-  display:grid;
-  grid-template-columns:
-    1.4fr .6fr;
-  gap:13px;
-}
-
-.large{
-  min-height:330px;
-}
-
-.large h2{
-  margin-top:90px;
-  margin-bottom:10px;
-  font-size:42px;
-  letter-spacing:-.065em;
-}
-
-.small-stack{
-  display:grid;
-  gap:13px;
-}
-
-.mini{
-  min-height:158px;
-}
-
-.number{
-  display:block;
-  font-size:40px;
-  font-weight:800;
-  letter-spacing:-.07em;
-}
-
+.card h3{margin:22px 0 6px;font-size:20px;letter-spacing:-.03em}
+.card p{margin:0;color:#888;line-height:1.5;font-size:13px}
+.view{display:inline-flex;margin-top:16px;font-size:12px;font-weight:700}
 .form{
-  max-width:900px;
-  margin:
-    45px auto 90px;
-  padding:25px;
-  border:
-    1px solid rgba(255,255,255,.09);
-  border-radius:27px;
-  background:
-    rgba(255,255,255,.045);
-  backdrop-filter:
-    blur(25px);
+  max-width:850px;
+  margin:35px auto 70px;
+  padding:28px;
+  border:1px solid rgba(255,255,255,.09);
+  border-radius:26px;
+  background:rgba(255,255,255,.04);
+  backdrop-filter:blur(25px);
 }
-
-.field{
-  margin-bottom:17px;
-}
-
-label{
-  display:block;
-  margin-bottom:8px;
-  color:#bbb;
-  font-size:12px;
-}
-
-input,
-textarea{
+.field{margin-bottom:16px}
+label{display:block;margin-bottom:8px;color:#bbb;font-size:12px;font-weight:600}
+input, textarea, select{
   width:100%;
   outline:0;
   color:#fff;
-  background:
-    rgba(0,0,0,.55);
-  border:
-    1px solid rgba(255,255,255,.10);
+  background:rgba(0,0,0,.6);
+  border:1px solid rgba(255,255,255,.11);
   border-radius:14px;
-  padding:13px;
+  padding:13px 15px;
+  font-size:14px;
+  transition:.2s;
 }
-
+input:focus, textarea:focus, select:focus{border-color:rgba(255,255,255,.35)}
 textarea{
-  min-height:430px;
+  min-height:280px;
   resize:vertical;
-  font-family:
-    ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
-  font-size:12px;
-  line-height:1.55;
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size:13px;
+  line-height:1.6;
 }
-
-input:focus,
-textarea:focus{
-  border-color:
-    rgba(255,255,255,.30);
-}
-
 .notice{
   display:none;
   margin:14px 0;
   padding:14px;
   border-radius:14px;
-  background:
-    rgba(255,255,255,.05);
-  border:
-    1px solid rgba(255,255,255,.10);
+  background:rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.12);
   color:#aaa;
+  font-size:13px;
 }
-
-.notice.show{
-  display:block;
-}
-
+.notice.show{display:block}
 .result{
   display:none;
-  margin-top:15px;
-  padding:18px;
+  margin-top:18px;
+  padding:20px;
   border-radius:18px;
-  background:
-    rgba(255,255,255,.045);
-  border:
-    1px solid rgba(255,255,255,.09);
+  background:rgba(255,255,255,.05);
+  border:1px solid rgba(255,255,255,.12);
 }
-
-.result.show{
-  display:block;
-}
-
+.result.show{display:block}
 .result code{
   display:block;
-  margin:
-    10px 0;
+  margin:10px 0;
   padding:12px;
   overflow:auto;
-  background:#000;
+  background:#050505;
   border-radius:12px;
-  color:#ccc;
+  color:#00ffaa;
+  font-family:monospace;
+  font-size:13px;
 }
-
+.tabs{
+  display:flex;
+  gap:8px;
+  margin-bottom:20px;
+  border-bottom:1px solid rgba(255,255,255,.09);
+  padding-bottom:12px;
+  overflow-x:auto;
+}
+.tab-btn{
+  padding:8px 16px;
+  border-radius:10px;
+  background:transparent;
+  border:1px solid transparent;
+  color:#888;
+  cursor:pointer;
+  font-size:13px;
+  font-weight:600;
+  transition:.2s;
+}
+.tab-btn.active{
+  background:rgba(255,255,255,.1);
+  border-color:rgba(255,255,255,.15);
+  color:#fff;
+}
 .footer{
-  padding:
-    35px 0 55px;
-  border-top:
-    1px solid rgba(255,255,255,.07);
-  color:#666;
+  margin-top:auto;
+  padding:30px 0 45px;
+  border-top:1px solid rgba(255,255,255,.07);
+  color:#555;
   font-size:12px;
+  text-align:center;
 }
-
-@media(max-width:800px){
-  .grid{
-    grid-template-columns: 1fr 1fr;
-  }
-  .feature{
-    grid-template-columns:1fr;
-  }
+@media(max-width:850px){
+  .grid{grid-template-columns:1fr 1fr}
+  .grid-4{grid-template-columns:1fr 1fr}
 }
-
 @media(max-width:550px){
-  .wrap{
-    width: calc(100% - 22px);
-  }
-  .hero{
-    padding-top:75px;
-  }
-  .hero h1{
-    font-size:51px;
-  }
-  .grid{
-    grid-template-columns:1fr;
-  }
-  .nav-menu a{
-    display:none;
-  }
-  .large h2{
-    font-size:32px;
-  }
-  .form{
-    padding:17px;
-  }
+  .grid, .grid-4{grid-template-columns:1fr}
+  .nav-menu{display:none}
+  .hero h1{font-size:46px}
+  .form{padding:18px}
 }
 </style>
 </head>
-
 <body>
 
 <nav class="nav">
   <div class="nav-inner">
     <a href="/" class="logo">
       <span class="logo-box">S</span>
-      <span>SJEMAR</span>
+      <span>SJEMAR CLOUD</span>
     </a>
     <div class="nav-menu">
       <a href="/">Home</a>
-      <a href="/create">Create</a>
+      <a href="/create">HTML Web</a>
+      <a href="/notepad">Notepad</a>
+      <a href="/images">Images</a>
+      <a href="/posts">Posts</a>
       <a href="/admin">Admin</a>
     </div>
   </div>
@@ -1064,7 +514,7 @@ ${content}
 
 <footer class="footer">
   <div class="wrap">
-    SJEMAR Hosting Engine
+    SJEMAR Engine &copy; 2026 — Secure All-in-One Cloud Hosting
   </div>
 </footer>
 
@@ -1075,148 +525,149 @@ ${script}
 }
 
 /* =========================================================
-   HOME
+   1. HOME PAGE
 ========================================================= */
 
 app.get("/", (req, res) => {
   const db = getDB();
-  const sites = (db.sites || []).filter((x) => x.published !== false);
+  const sites = db.sites.filter((x) => x.published !== false);
+  const notes = db.notes.filter((x) => x.published !== false);
+  const posts = db.posts.filter((x) => x.published !== false);
+  const images = db.images || [];
 
-  const views = sites.reduce((a, b) => a + Number(b.views || 0), 0);
+  const totalViews =
+    sites.reduce((a, b) => a + Number(b.views || 0), 0) +
+    notes.reduce((a, b) => a + Number(b.views || 0), 0) +
+    posts.reduce((a, b) => a + Number(b.views || 0), 0);
 
-  const projects = sites
-    .slice(0, 6)
-    .map(
-      (site) => `
-        <div class="card">
-          <div class="card-top">
-            <div class="icon">WEB</div>
-            <span class="pill">100% Free</span>
-          </div>
-          <h3>${escapeHTML(site.title)}</h3>
-          <p>Published website project</p>
-          <a class="view" href="/site/${encodeURIComponent(site.slug)}">VIEW</a>
-        </div>
-      `
-    )
-    .join("");
+  const recentWebsites = sites.slice(0, 6).map((site) => `
+    <div class="card">
+      <div class="card-top">
+        <div class="icon">WEB</div>
+        <span class="pill">${Number(site.views || 0)} views</span>
+      </div>
+      <h3>${escapeHTML(site.title)}</h3>
+      <p>Instant hosted static web project.</p>
+      <a class="view" href="/site/${encodeURIComponent(site.slug)}">VISIT &rarr;</a>
+    </div>
+  `).join("");
+
+  const recentNotes = notes.slice(0, 3).map((note) => `
+    <div class="card">
+      <div class="card-top">
+        <div class="icon">TXT</div>
+        <span class="pill">Note</span>
+      </div>
+      <h3>${escapeHTML(note.title)}</h3>
+      <p>${escapeHTML(note.content.slice(0, 70))}...</p>
+      <a class="view" href="/note/${encodeURIComponent(note.slug)}">READ NOTE &rarr;</a>
+    </div>
+  `).join("");
 
   res.send(
     page(
-      "SJEMAR",
+      "Home — Free All-in-One Platform",
       `
 <main>
 <section class="hero">
   <div class="wrap">
     <div class="badge">
       <span class="badge-dot"></span>
-      100% Free Hosting
+      100% Free Hosting Platform
     </div>
-    <h1>Build.<br>Publish.<br>Share.</h1>
-    <p>Upload your HTML website and instantly get a public link. Fast, simple and built for the web.</p>
+    <h1>Build. Host.<br>Paste. Share.</h1>
+    <p>All-in-one suite for HTML websites, code pastebin, direct image hosting, and articles with instant public links.</p>
     <div class="actions">
       <a class="btn primary" href="/create">CREATE WEBSITE</a>
-      <a class="btn" href="#resources">EXPLORE</a>
+      <a class="btn" href="/notepad">PASTE NOTE</a>
+      <a class="btn" href="/images">UPLOAD IMAGE</a>
+      <a class="btn" href="/posts">READ POSTS</a>
     </div>
   </div>
-</section>
-
-<section class="section" id="resources">
-<div class="wrap">
-<div class="section-head">
-  <h2>Resources</h2>
-  <p>Free tools and services.</p>
-</div>
-<div class="grid">
-  <div class="card">
-    <div class="card-top">
-      <div class="icon">WEB</div>
-      <span class="pill">100% Free</span>
-    </div>
-    <h3>Website</h3>
-    <p>Create and publish your own HTML website.</p>
-    <a class="view" href="/create">VIEW</a>
-  </div>
-  <div class="card">
-    <div class="card-top">
-      <div class="icon">APK</div>
-      <span class="pill">FREE</span>
-    </div>
-    <h3>APK</h3>
-    <p>HTML based application project section.</p>
-    <a class="view" href="/create">VIEW</a>
-  </div>
-  <div class="card">
-    <div class="card-top">
-      <div class="icon">BOT</div>
-      <span class="pill">FREE</span>
-    </div>
-    <h3>BOT</h3>
-    <p>Bot and automation project section.</p>
-    <a class="view" href="/create">VIEW</a>
-  </div>
-</div>
-</div>
 </section>
 
 <section class="section">
-<div class="wrap">
-<div class="feature">
-  <div class="card large">
-    <div class="card-top">
-      <div class="icon">SJ</div>
-      <span class="pill">SJEMAR</span>
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Cloud Services</h2>
+      <p>Everything you need in one place.</p>
     </div>
-    <h2>OLED.<br>Glass.<br>Simple.</h2>
-    <p>A clean dark interface designed for mobile and desktop.</p>
+    <div class="grid-4">
+      <div class="card">
+        <div class="card-top"><div class="icon">WEB</div><span class="pill">Fast</span></div>
+        <h3>HTML Web</h3>
+        <p>Host dynamic single page or static HTML apps instantly.</p>
+        <a class="view" href="/create">DEPLOY &rarr;</a>
+      </div>
+      <div class="card">
+        <div class="card-top"><div class="icon">TXT</div><span class="pill">Notepad</span></div>
+        <h3>Pastebin</h3>
+        <p>Save notes, codes and raw scripts with permanent share links.</p>
+        <a class="view" href="/notepad">WRITE &rarr;</a>
+      </div>
+      <div class="card">
+        <div class="card-top"><div class="icon">IMG</div><span class="pill">Direct</span></div>
+        <h3>Image Host</h3>
+        <p>Upload screenshots & photos to get instant direct links.</p>
+        <a class="view" href="/images">UPLOAD &rarr;</a>
+      </div>
+      <div class="card">
+        <div class="card-top"><div class="icon">DOC</div><span class="pill">Blog</span></div>
+        <h3>Posts & News</h3>
+        <p>Read developer articles, tutorials and announcements.</p>
+        <a class="view" href="/posts">EXPLORE &rarr;</a>
+      </div>
+    </div>
   </div>
-  <div class="small-stack">
-    <div class="card mini">
-      <span class="number">${sites.length}</span>
-      <p>Published websites</p>
-    </div>
-    <div class="card mini">
-      <span class="number">${views}</span>
-      <p>Total views</p>
-    </div>
-  </div>
-</div>
-</div>
 </section>
 
-${
-  projects
-    ? `
 <section class="section">
-<div class="wrap">
-<div class="section-head">
-  <h2>Review Projects</h2>
-  <p>Latest published websites.</p>
-</div>
-<div class="grid">
-${projects}
-</div>
-</div>
+  <div class="wrap">
+    <div class="grid-4">
+      <div class="card">
+        <span class="pill">Websites</span>
+        <h2 style="font-size:36px; margin:10px 0 0">${sites.length}</h2>
+      </div>
+      <div class="card">
+        <span class="pill">Notepads</span>
+        <h2 style="font-size:36px; margin:10px 0 0">${notes.length}</h2>
+      </div>
+      <div class="card">
+        <span class="pill">Images</span>
+        <h2 style="font-size:36px; margin:10px 0 0">${images.length}</h2>
+      </div>
+      <div class="card">
+        <span class="pill">Total Hits</span>
+        <h2 style="font-size:36px; margin:10px 0 0">${totalViews}</h2>
+      </div>
+    </div>
+  </div>
 </section>
-`
-    : ""
-}
 
+${recentWebsites ? `
 <section class="section">
-<div class="wrap">
-<div class="card large">
-  <div class="card-top">
-    <div class="icon">HTML</div>
-    <span class="pill">INSTANT</span>
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Published Websites</h2>
+      <p>Explore recent sites built by users.</p>
+    </div>
+    <div class="grid">${recentWebsites}</div>
   </div>
-  <h2>Have an HTML file?</h2>
-  <p>Publish it now and receive a shareable public URL.</p>
-  <div class="actions" style="justify-content:flex-start">
-    <a class="btn primary" href="/create">UPLOAD HTML</a>
-  </div>
-</div>
-</div>
 </section>
+` : ""}
+
+${recentNotes ? `
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Recent Notes & Pastes</h2>
+      <p>Public codes and snippets.</p>
+    </div>
+    <div class="grid">${recentNotes}</div>
+  </div>
+</section>
+` : ""}
+
 </main>
 `
     )
@@ -1224,64 +675,47 @@ ${projects}
 });
 
 /* =========================================================
-   CREATE PAGE
+   2. HTML HOSTING MODULE
 ========================================================= */
 
 app.get("/create", (req, res) => {
   res.send(
     page(
-      "Create Website",
+      "Create HTML Website",
       `
 <main class="wrap">
-<section class="hero" style="padding-bottom:20px">
-  <div class="badge">
-    <span class="badge-dot"></span>
-    HTML → LINK
-  </div>
-  <h1>Publish your<br>website.</h1>
-  <p>Paste your HTML code, choose a URL and publish.</p>
-</section>
+  <section class="hero" style="padding-bottom:15px">
+    <div class="badge"><span class="badge-dot"></span> HTML &rarr; PUBLIC LINK</div>
+    <h1>Host your HTML.</h1>
+    <p>Paste any custom HTML/CSS/JS file to generate an instant link.</p>
+  </section>
 
-<section class="form">
-  <div class="field">
-    <label>Website title</label>
-    <input id="title" maxlength="80" placeholder="My Website">
-  </div>
-
-  <div class="field">
-    <label>URL slug</label>
-    <input id="slug" maxlength="50" placeholder="my-website">
-  </div>
-
-  <div class="field">
-    <label>HTML</label>
-    <textarea id="html" spellcheck="false" placeholder="<!DOCTYPE html>
-<html>
-<head>
-<title>My Website</title>
-</head>
-<body>
-<h1>Hello World</h1>
-</body>
-</html>"></textarea>
-  </div>
-
-  <div id="notice" class="notice"></div>
-
-  <button id="publish" class="btn primary" style="width:100%">PUBLISH WEBSITE</button>
-
-  <div id="result" class="result">
-    <strong>Website published</strong>
-    <p>Your public link:</p>
-    <code id="url"></code>
-    <div class="actions" style="justify-content:flex-start">
-      <a id="open" class="btn primary" target="_blank">OPEN</a>
-      <button id="copy" class="btn">COPY LINK</button>
+  <section class="form">
+    <div class="field">
+      <label>Website Title *</label>
+      <input id="title" placeholder="My Awesome Project" maxlength="80">
     </div>
-    <p style="color:#666; font-size:12px; margin-top:18px">Save this edit key.</p>
-    <code id="key"></code>
-  </div>
-</section>
+    <div class="field">
+      <label>Custom Slug (Optional)</label>
+      <input id="slug" placeholder="custom-slug" maxlength="50">
+    </div>
+    <div class="field">
+      <label>HTML Code *</label>
+      <textarea id="html" placeholder="<!DOCTYPE html>&#10;<html>&#10;<head><title>App</title></head>&#10;<body><h1>Hello World</h1></body>&#10;</html>"></textarea>
+    </div>
+    <div id="notice" class="notice"></div>
+    <button id="publish" class="btn primary" style="width:100%">PUBLISH WEBSITE</button>
+
+    <div id="result" class="result">
+      <strong>Website Published!</strong>
+      <p>Public Link:</p>
+      <code id="url"></code>
+      <div class="actions" style="justify-content:flex-start">
+        <a id="open" class="btn primary" target="_blank">OPEN SITE</a>
+        <button id="copy" class="btn">COPY LINK</button>
+      </div>
+    </div>
+  </section>
 </main>
 `,
       `
@@ -1293,186 +727,671 @@ const publish = document.getElementById("publish");
 const notice = document.getElementById("notice");
 const result = document.getElementById("result");
 const url = document.getElementById("url");
-const key = document.getElementById("key");
 const open = document.getElementById("open");
 const copy = document.getElementById("copy");
 
-function show(text){
+function showMsg(text){
   notice.textContent = text;
   notice.className = "notice show";
 }
 
-title.addEventListener("input", () => {
-  if(slug.dataset.manual) return;
-  slug.value = title.value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g,"-")
-    .replace(/^-+|-+$/g,"")
-    .slice(0,50);
-});
-
-slug.addEventListener("input", () => {
-  slug.dataset.manual = "1";
-  slug.value = slug.value
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g,"")
-    .slice(0,50);
-});
-
-publish.addEventListener("click", async () => {
-  if(!title.value.trim()){
-    show("Enter website title.");
-    return;
+publish.onclick = async () => {
+  if(!title.value.trim() || !html.value.trim()){
+    return showMsg("Title and HTML code are required!");
   }
-  if(!html.value.trim()){
-    show("Paste your HTML.");
-    return;
-  }
-
   publish.disabled = true;
-  publish.textContent = "PUBLISHING...";
-
+  publish.textContent = "Publishing...";
   try{
     const r = await fetch("/api/publish", {
       method:"POST",
       headers:{ "Content-Type": "application/json" },
-      body:JSON.stringify({
-        title: title.value,
-        slug: slug.value,
-        html: html.value
-      })
+      body:JSON.stringify({ title: title.value, slug: slug.value, html: html.value })
     });
+    const d = await r.json();
+    if(!r.ok || !d.ok) throw new Error(d.error || "Failed");
 
-    const data = await r.json();
-
-    if(!r.ok || !data.ok){
-      throw new Error(data.error || "Publish failed");
-    }
-
-    url.textContent = data.site.url;
-    key.textContent = data.site.editKey;
-    open.href = data.site.url;
-
-    result.classList.add("show");
-    show("Website published successfully.");
-    result.scrollIntoView({ behavior:"smooth" });
-  }catch(error){
-    show(error.message);
+    url.textContent = d.site.url;
+    open.href = d.site.url;
+    result.className = "result show";
+    showMsg("Website is live!");
+  }catch(e){
+    showMsg(e.message);
   }finally{
     publish.disabled = false;
     publish.textContent = "PUBLISH WEBSITE";
   }
-});
+};
 
-copy.addEventListener("click", async () => {
-  try{
-    await navigator.clipboard.writeText(url.textContent);
-    copy.textContent = "COPIED";
-    setTimeout(() => copy.textContent = "COPY LINK", 1500);
-  }catch{
-    show("Copy failed.");
-  }
-});
+copy.onclick = async () => {
+  await navigator.clipboard.writeText(url.textContent);
+  copy.textContent = "COPIED!";
+  setTimeout(() => copy.textContent = "COPY LINK", 1500);
+};
 </script>
 `
     )
   );
 });
 
+app.post("/api/publish", (req, res) => {
+  try {
+    const title = cleanText(req.body.title, 80);
+    const html = req.body.html;
+    let slug = slugify(req.body.slug || title);
+
+    if (!title || !html || typeof html !== "string") {
+      return res.status(400).json({ ok: false, error: "Title and valid HTML required" });
+    }
+
+    if (!slug) slug = "site-" + genId(4);
+    if (!validSlug(slug)) return res.status(400).json({ ok: false, error: "Invalid URL slug" });
+
+    const db = getDB();
+    if (db.sites.some((s) => s.slug === slug)) {
+      return res.status(409).json({ ok: false, error: "Slug already exists. Choose another." });
+    }
+
+    const editKey = genSecret();
+    const site = {
+      id: genId(),
+      title,
+      slug,
+      html,
+      editKey: hash(editKey),
+      published: true,
+      views: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    db.sites.unshift(site);
+    saveDB(db);
+
+    const proto = req.headers["x-forwarded-proto"] || req.protocol;
+    const host = req.get("host");
+
+    res.json({
+      ok: true,
+      site: {
+        id: site.id,
+        title: site.title,
+        slug: site.slug,
+        url: `${proto}://${host}/site/${site.slug}`,
+        editKey
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: "Publish failed" });
+  }
+});
+
+app.get("/site/:slug", (req, res) => {
+  try {
+    const db = getDB();
+    const site = db.sites.find((s) => s.slug === req.params.slug);
+    if (!site || site.published === false) {
+      return res.status(404).send(notFound("Website not found or is private."));
+    }
+    site.views = Number(site.views || 0) + 1;
+    saveDB(db);
+    res.type("html").send(site.html);
+  } catch (err) {
+    res.status(500).send(notFound("Error rendering website"));
+  }
+});
+
 /* =========================================================
-   ADMIN PAGE
+   3. NOTEPAD / PASTEBIN MODULE
+========================================================= */
+
+app.get("/notepad", (req, res) => {
+  res.send(
+    page(
+      "Cloud Notepad & Pastebin",
+      `
+<main class="wrap">
+  <section class="hero" style="padding-bottom:15px">
+    <div class="badge"><span class="badge-dot"></span> NOTEPAD / PASTEBIN</div>
+    <h1>Save notes & code.</h1>
+    <p>Create instant shareable text, JSON, logs or snippets.</p>
+  </section>
+
+  <section class="form">
+    <div class="field">
+      <label>Note Title *</label>
+      <input id="nTitle" placeholder="My Note / Code Title">
+    </div>
+    <div class="field">
+      <label>Language / Type</label>
+      <select id="nLang">
+        <option value="text">Plain Text</option>
+        <option value="javascript">JavaScript / Node.js</option>
+        <option value="html">HTML / XML</option>
+        <option value="json">JSON</option>
+        <option value="css">CSS</option>
+        <option value="python">Python</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Note Content *</label>
+      <textarea id="nContent" placeholder="Write or paste your note/code here..."></textarea>
+    </div>
+    <div id="nNotice" class="notice"></div>
+    <button id="nSave" class="btn primary" style="width:100%">SAVE NOTE</button>
+
+    <div id="nResult" class="result">
+      <strong>Note Saved!</strong>
+      <p>Public Link:</p>
+      <code id="nUrl"></code>
+      <p>Raw Link:</p>
+      <code id="nRawUrl"></code>
+      <div class="actions" style="justify-content:flex-start">
+        <a id="nOpen" class="btn primary" target="_blank">OPEN NOTE</a>
+      </div>
+    </div>
+  </section>
+</main>
+`,
+      `
+<script>
+const nTitle = document.getElementById("nTitle");
+const nLang = document.getElementById("nLang");
+const nContent = document.getElementById("nContent");
+const nSave = document.getElementById("nSave");
+const nNotice = document.getElementById("nNotice");
+const nResult = document.getElementById("nResult");
+const nUrl = document.getElementById("nUrl");
+const nRawUrl = document.getElementById("nRawUrl");
+const nOpen = document.getElementById("nOpen");
+
+function showMsg(t){
+  nNotice.textContent = t;
+  nNotice.className = "notice show";
+}
+
+nSave.onclick = async () => {
+  if(!nTitle.value.trim() || !nContent.value.trim()){
+    return showMsg("Title and content are required!");
+  }
+  nSave.disabled = true;
+  try{
+    const r = await fetch("/api/notes", {
+      method:"POST",
+      headers:{ "Content-Type": "application/json" },
+      body:JSON.stringify({ title: nTitle.value, lang: nLang.value, content: nContent.value })
+    });
+    const d = await r.json();
+    if(!r.ok || !d.ok) throw new Error(d.error || "Save error");
+
+    nUrl.textContent = d.note.url;
+    nRawUrl.textContent = d.note.rawUrl;
+    nOpen.href = d.note.url;
+    nResult.className = "result show";
+    showMsg("Note saved successfully!");
+  }catch(e){
+    showMsg(e.message);
+  }finally{
+    nSave.disabled = false;
+  }
+};
+</script>
+`
+    )
+  );
+});
+
+app.post("/api/notes", (req, res) => {
+  try {
+    const title = cleanText(req.body.title, 100);
+    const content = req.body.content;
+    const lang = cleanText(req.body.lang, 20) || "text";
+
+    if (!title || !content || typeof content !== "string") {
+      return res.status(400).json({ ok: false, error: "Title and content required" });
+    }
+
+    const db = getDB();
+    const slug = slugify(title) || "note-" + genId(4);
+    let finalSlug = slug;
+    let count = 1;
+    while (db.notes.some((n) => n.slug === finalSlug)) {
+      finalSlug = `${slug}-${count++}`;
+    }
+
+    const note = {
+      id: genId(),
+      title,
+      slug: finalSlug,
+      lang,
+      content,
+      published: true,
+      views: 0,
+      createdAt: new Date().toISOString()
+    };
+
+    db.notes.unshift(note);
+    saveDB(db);
+
+    const proto = req.headers["x-forwarded-proto"] || req.protocol;
+    const host = req.get("host");
+
+    res.json({
+      ok: true,
+      note: {
+        id: note.id,
+        title: note.title,
+        slug: note.slug,
+        url: `${proto}://${host}/note/${note.slug}`,
+        rawUrl: `${proto}://${host}/raw/${note.slug}`
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: "Failed to save note" });
+  }
+});
+
+app.get("/note/:slug", (req, res) => {
+  const db = getDB();
+  const note = db.notes.find((n) => n.slug === req.params.slug);
+  if (!note || note.published === false) {
+    return res.status(404).send(notFound("Note not found"));
+  }
+
+  note.views = Number(note.views || 0) + 1;
+  saveDB(db);
+
+  res.send(
+    page(
+      note.title,
+      `
+<main class="wrap" style="padding:40px 0">
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-top">
+      <div>
+        <h1 style="margin:0;font-size:28px">${escapeHTML(note.title)}</h1>
+        <p style="margin-top:6px;color:#777">Language: ${escapeHTML(note.lang)} | Created: ${new Date(note.createdAt).toLocaleDateString()}</p>
+      </div>
+      <div class="actions">
+        <a href="/raw/${encodeURIComponent(note.slug)}" class="btn" target="_blank">RAW</a>
+        <button id="copyBtn" class="btn">COPY CONTENT</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="background:#050505; border-color:rgba(255,255,255,.15)">
+    <pre style="margin:0; overflow-x:auto; font-family:monospace; font-size:14px; line-height:1.6; color:#e0e0e0"><code id="codeText">${escapeHTML(note.content)}</code></pre>
+  </div>
+</main>
+`,
+      `
+<script>
+document.getElementById("copyBtn").onclick = async () => {
+  await navigator.clipboard.writeText(document.getElementById("codeText").innerText);
+  const b = document.getElementById("copyBtn");
+  b.textContent = "COPIED!";
+  setTimeout(() => b.textContent = "COPY CONTENT", 1500);
+};
+</script>
+`
+    )
+  );
+});
+
+app.get("/raw/:slug", (req, res) => {
+  const db = getDB();
+  const note = db.notes.find((n) => n.slug === req.params.slug);
+  if (!note || note.published === false) return res.status(404).send("Not Found");
+  res.type("text/plain").send(note.content);
+});
+
+/* =========================================================
+   4. IMAGE HOSTING & LINK GENERATOR
+========================================================= */
+
+app.get("/images", (req, res) => {
+  res.send(
+    page(
+      "Image Hosting",
+      `
+<main class="wrap">
+  <section class="hero" style="padding-bottom:15px">
+    <div class="badge"><span class="badge-dot"></span> DIRECT IMAGE HOSTING</div>
+    <h1>Upload & Share Images</h1>
+    <p>Get permanent direct links, markdown tags and HTML embed codes.</p>
+  </section>
+
+  <section class="form">
+    <div class="field">
+      <label>Image Title / Description</label>
+      <input id="imgTitle" placeholder="Screenshot or Photo name">
+    </div>
+    <div class="field">
+      <label>Select Image File *</label>
+      <input id="imgFile" type="file" accept="image/*">
+    </div>
+    <div id="imgPreview" style="margin:15px 0; text-align:center; display:none">
+      <img id="previewEl" style="max-width:100%; max-height:260px; border-radius:14px; border:1px solid rgba(255,255,255,.15)">
+    </div>
+    <div id="imgNotice" class="notice"></div>
+    <button id="imgUpload" class="btn primary" style="width:100%">UPLOAD IMAGE</button>
+
+    <div id="imgResult" class="result">
+      <strong>Image Uploaded!</strong>
+      <p>Direct Link:</p>
+      <code id="imgDirectUrl"></code>
+      <p>HTML Embed:</p>
+      <code id="imgHtmlCode"></code>
+      <div class="actions" style="justify-content:flex-start">
+        <a id="imgOpen" class="btn primary" target="_blank">VIEW IMAGE</a>
+      </div>
+    </div>
+  </section>
+</main>
+`,
+      `
+<script>
+const imgFile = document.getElementById("imgFile");
+const imgTitle = document.getElementById("imgTitle");
+const previewEl = document.getElementById("previewEl");
+const imgPreview = document.getElementById("imgPreview");
+const imgUpload = document.getElementById("imgUpload");
+const imgNotice = document.getElementById("imgNotice");
+const imgResult = document.getElementById("imgResult");
+const imgDirectUrl = document.getElementById("imgDirectUrl");
+const imgHtmlCode = document.getElementById("imgHtmlCode");
+const imgOpen = document.getElementById("imgOpen");
+
+let base64Data = "";
+let mimeType = "";
+
+imgFile.onchange = (e) => {
+  const file = e.target.files[0];
+  if(!file) return;
+  mimeType = file.type;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    base64Data = ev.target.result;
+    previewEl.src = base64Data;
+    imgPreview.style.display = "block";
+  };
+  reader.readAsDataURL(file);
+};
+
+imgUpload.onclick = async () => {
+  if(!base64Data){
+    imgNotice.textContent = "Please select an image!";
+    imgNotice.className = "notice show";
+    return;
+  }
+  imgUpload.disabled = true;
+  try{
+    const r = await fetch("/api/images", {
+      method:"POST",
+      headers:{ "Content-Type": "application/json" },
+      body:JSON.stringify({
+        title: imgTitle.value || "Image",
+        data: base64Data,
+        mime: mimeType
+      })
+    });
+    const d = await r.json();
+    if(!r.ok || !d.ok) throw new Error(d.error || "Upload failed");
+
+    imgDirectUrl.textContent = d.image.url;
+    imgHtmlCode.textContent = '<img src="' + d.image.url + '" alt="Image">';
+    imgOpen.href = d.image.url;
+    imgResult.className = "result show";
+    imgNotice.textContent = "Image uploaded successfully!";
+    imgNotice.className = "notice show";
+  }catch(err){
+    imgNotice.textContent = err.message;
+    imgNotice.className = "notice show";
+  }finally{
+    imgUpload.disabled = false;
+  }
+};
+</script>
+`
+    )
+  );
+});
+
+app.post("/api/images", (req, res) => {
+  try {
+    const { title, data, mime } = req.body;
+    if (!data || !mime) {
+      return res.status(400).json({ ok: false, error: "Image data is required" });
+    }
+
+    const id = genId(8);
+    const db = getDB();
+
+    const imgObj = {
+      id,
+      title: cleanText(title || "Uploaded Image", 60),
+      mime: cleanText(mime, 40),
+      data,
+      views: 0,
+      createdAt: new Date().toISOString()
+    };
+
+    db.images.unshift(imgObj);
+    saveDB(db);
+
+    const proto = req.headers["x-forwarded-proto"] || req.protocol;
+    const host = req.get("host");
+
+    res.json({
+      ok: true,
+      image: {
+        id,
+        url: `${proto}://${host}/img/${id}`
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: "Image save error" });
+  }
+});
+
+app.get("/img/:id", (req, res) => {
+  const db = getDB();
+  const img = db.images.find((x) => x.id === req.params.id);
+  if (!img) return res.status(404).send("Image Not Found");
+
+  img.views = Number(img.views || 0) + 1;
+  saveDB(db);
+
+  const matches = img.data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+  if (!matches || matches.length !== 3) {
+    return res.status(500).send("Invalid image format");
+  }
+
+  const imageBuffer = Buffer.from(matches[2], "base64");
+  res.writeHead(200, {
+    "Content-Type": img.mime || matches[1],
+    "Content-Length": imageBuffer.length,
+    "Cache-Control": "public, max-age=86400"
+  });
+  res.end(imageBuffer);
+});
+
+/* =========================================================
+   5. POSTS & BLOG MODULE
+========================================================= */
+
+app.get("/posts", (req, res) => {
+  const db = getDB();
+  const posts = db.posts.filter((p) => p.published !== false);
+
+  const postList = posts.map((post) => `
+    <div class="card" style="margin-bottom:15px">
+      <div class="card-top">
+        <span class="pill">${new Date(post.createdAt).toLocaleDateString()}</span>
+        <span class="pill">${Number(post.views || 0)} reads</span>
+      </div>
+      <h2 style="margin:16px 0 8px; font-size:24px"><a href="/post/${encodeURIComponent(post.slug)}">${escapeHTML(post.title)}</a></h2>
+      <p>${escapeHTML(post.content.slice(0, 150))}...</p>
+      <a class="view" href="/post/${encodeURIComponent(post.slug)}">READ FULL POST &rarr;</a>
+    </div>
+  `).join("");
+
+  res.send(
+    page(
+      "Community Posts & Articles",
+      `
+<main class="wrap" style="padding:40px 0">
+  <div class="hero" style="padding:40px 0">
+    <div class="badge"><span class="badge-dot"></span> COMMUNITY UPDATES</div>
+    <h1>Posts & Articles</h1>
+    <p>Read developer articles, tutorials and guides.</p>
+  </div>
+
+  <div style="max-width:850px; margin:auto">
+    ${postList || `<div class="card"><p>No posts published yet.</p></div>`}
+  </div>
+</main>
+`
+    )
+  );
+});
+
+app.get("/post/:slug", (req, res) => {
+  const db = getDB();
+  const post = db.posts.find((p) => p.slug === req.params.slug);
+  if (!post || post.published === false) return res.status(404).send(notFound("Post not found"));
+
+  post.views = Number(post.views || 0) + 1;
+  saveDB(db);
+
+  res.send(
+    page(
+      post.title,
+      `
+<main class="wrap" style="padding:50px 0; max-width:850px">
+  <div class="card">
+    <span class="pill">${new Date(post.createdAt).toLocaleDateString()}</span>
+    <h1 style="font-size:38px; margin:16px 0">${escapeHTML(post.title)}</h1>
+    <hr style="border:0; border-top:1px solid rgba(255,255,255,.1); margin:20px 0">
+    <div style="font-size:16px; line-height:1.75; color:#ccc; white-space:pre-wrap">${escapeHTML(post.content)}</div>
+  </div>
+</main>
+`
+    )
+  );
+});
+
+/* =========================================================
+   6. SUPER ADMIN CONTROL PANEL (ALL-IN-ONE)
 ========================================================= */
 
 app.get("/admin", (req, res) => {
   res.send(
     page(
-      "Admin",
+      "Admin Control Panel",
       `
-<main class="wrap">
-<section id="login" class="form" style="max-width:500px">
-  <div class="badge">
-    <span class="badge-dot"></span>
-    PRIVATE AREA
-  </div>
-  <h1 style="font-size:48px; letter-spacing:-.07em">Admin</h1>
-  <p style="color:#777">Manage your websites.</p>
+<main class="wrap" style="padding:40px 0">
+  <!-- LOGIN FORM -->
+  <section id="loginSection" class="form" style="max-width:460px; margin:60px auto">
+    <div class="badge"><span class="badge-dot"></span> PROTECTED AREA</div>
+    <h1 style="font-size:38px; letter-spacing:-.06em; margin:16px 0 6px">Admin Sign In</h1>
+    <p style="color:#777; margin-bottom:20px">Enter secure master password to access system.</p>
 
-  <div class="field">
-    <label>Password</label>
-    <input id="password" type="password">
-  </div>
+    <div class="field">
+      <label>Master Password</label>
+      <input id="adminPass" type="password" placeholder="••••••••">
+    </div>
+    <div id="loginNotice" class="notice"></div>
+    <button id="loginBtn" class="btn primary" style="width:100%">LOGIN TO SYSTEM</button>
+  </section>
 
-  <div id="loginNotice" class="notice"></div>
-  <button id="loginBtn" class="btn primary" style="width:100%">SIGN IN</button>
-</section>
-
-<section id="dashboard" style="display:none; padding:60px 0">
-  <div style="display:flex; align-items:center; justify-content:space-between; gap:15px; margin-bottom:20px">
-    <div>
-      <div class="badge">
-        <span class="badge-dot"></span>
-        CONTROL CENTER
+  <!-- DASHBOARD PANEL -->
+  <section id="dashSection" style="display:none">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:25px; flex-wrap:wrap; gap:10px">
+      <div>
+        <div class="badge"><span class="badge-dot"></span> MASTER CONTROL</div>
+        <h1 style="font-size:36px; letter-spacing:-.05em; margin:8px 0 0">System Dashboard</h1>
       </div>
-      <h1 style="font-size:44px; letter-spacing:-.07em">Websites</h1>
+      <button id="logoutBtn" class="btn danger">LOGOUT</button>
     </div>
-    <button id="logout" class="btn">LOG OUT</button>
-  </div>
 
-  <div class="card">
-    <h3>Create Website</h3>
-    <div class="field">
-      <label>Title</label>
-      <input id="aTitle" placeholder="Website title">
+    <!-- TABS -->
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('sites')">Websites</button>
+      <button class="tab-btn" onclick="switchTab('notes')">Notepads</button>
+      <button class="tab-btn" onclick="switchTab('posts')">Posts</button>
+      <button class="tab-btn" onclick="switchTab('images')">Images</button>
     </div>
-    <div class="field">
-      <label>Slug</label>
-      <input id="aSlug" placeholder="website-name">
-    </div>
-    <div class="field">
-      <label>HTML</label>
-      <textarea id="aHTML" style="min-height:300px"></textarea>
-    </div>
-    <button id="create" class="btn primary">CREATE WEBSITE</button>
+
     <div id="adminNotice" class="notice"></div>
-  </div>
 
-  <div id="sites" style="margin-top:15px"></div>
-</section>
+    <!-- 1. SITES TAB -->
+    <div id="tab-sites" class="tab-pane">
+      <div class="card" style="margin-bottom:20px">
+        <h3>Create New Website (Admin)</h3>
+        <div class="field"><input id="adSiteTitle" placeholder="Title"></div>
+        <div class="field"><input id="adSiteSlug" placeholder="Slug"></div>
+        <div class="field"><textarea id="adSiteHtml" placeholder="HTML code"></textarea></div>
+        <button onclick="createAdminSite()" class="btn primary">CREATE WEBSITE</button>
+      </div>
+      <div id="siteList"></div>
+    </div>
+
+    <!-- 2. NOTES TAB -->
+    <div id="tab-notes" class="tab-pane" style="display:none">
+      <div class="card" style="margin-bottom:20px">
+        <h3>Create Note / Code</h3>
+        <div class="field"><input id="adNoteTitle" placeholder="Title"></div>
+        <div class="field"><textarea id="adNoteContent" placeholder="Content..."></textarea></div>
+        <button onclick="createAdminNote()" class="btn primary">SAVE NOTE</button>
+      </div>
+      <div id="noteList"></div>
+    </div>
+
+    <!-- 3. POSTS TAB -->
+    <div id="tab-posts" class="tab-pane" style="display:none">
+      <div class="card" style="margin-bottom:20px">
+        <h3>Publish Article / Post</h3>
+        <div class="field"><input id="adPostTitle" placeholder="Post Title"></div>
+        <div class="field"><textarea id="adPostContent" placeholder="Write post content..."></textarea></div>
+        <button onclick="createAdminPost()" class="btn primary">PUBLISH POST</button>
+      </div>
+      <div id="postList"></div>
+    </div>
+
+    <!-- 4. IMAGES TAB -->
+    <div id="tab-images" class="tab-pane" style="display:none">
+      <div id="imageList" class="grid"></div>
+    </div>
+  </section>
 </main>
 `,
       `
 <script>
-const login = document.getElementById("login");
-const dashboard = document.getElementById("dashboard");
-const password = document.getElementById("password");
+const loginSection = document.getElementById("loginSection");
+const dashSection = document.getElementById("dashSection");
+const adminPass = document.getElementById("adminPass");
 const loginBtn = document.getElementById("loginBtn");
 const loginNotice = document.getElementById("loginNotice");
-const sites = document.getElementById("sites");
+const logoutBtn = document.getElementById("logoutBtn");
+const adminNotice = document.getElementById("adminNotice");
 
-function msg(el,text){
+function msg(el, text){
   el.textContent = text;
   el.className = "notice show";
 }
 
-async function api(url, options={}){
-  const r = await fetch(url, options);
-  const data = await r.json();
-  if(!r.ok || !data.ok){
-    throw new Error(data.error || "Request failed");
-  }
-  return data;
+function switchTab(tabId){
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll(".tab-pane").forEach(p => p.style.display = "none");
+  event.target.classList.add("active");
+  document.getElementById("tab-" + tabId).style.display = "block";
 }
 
-async function check(){
-  try{
-    await api("/api/admin/me");
-    login.style.display = "none";
-    dashboard.style.display = "block";
-    load();
-  }catch{
-    login.style.display = "block";
-    dashboard.style.display = "none";
-  }
+async function api(url, opts = {}){
+  const res = await fetch(url, opts);
+  const data = await res.json();
+  if(!res.ok || !data.ok) throw new Error(data.error || "Request failed");
+  return data;
 }
 
 loginBtn.onclick = async () => {
@@ -1480,105 +1399,164 @@ loginBtn.onclick = async () => {
     await api("/api/admin/login", {
       method:"POST",
       headers:{ "Content-Type": "application/json" },
-      body:JSON.stringify({ password: password.value })
+      body:JSON.stringify({ password: adminPass.value })
     });
-    password.value = "";
-    check();
-  }catch(error){
-    msg(loginNotice, error.message);
+    adminPass.value = "";
+    initAdmin();
+  }catch(e){
+    msg(loginNotice, e.message);
   }
 };
 
-password.onkeydown = e => {
-  if(e.key === "Enter") loginBtn.click();
-};
-
-document.getElementById("logout").onclick = async () => {
+logoutBtn.onclick = async () => {
   await api("/api/admin/logout", { method:"POST" });
-  check();
+  location.reload();
 };
 
-document.getElementById("create").onclick = async () => {
-  const button = document.getElementById("create");
+async function initAdmin(){
   try{
-    button.disabled = true;
-    await api("/api/admin/sites", {
-      method:"POST",
-      headers:{ "Content-Type": "application/json" },
-      body:JSON.stringify({
-        title: document.getElementById("aTitle").value,
-        slug: document.getElementById("aSlug").value,
-        html: document.getElementById("aHTML").value
-      })
-    });
-    document.getElementById("aTitle").value = "";
-    document.getElementById("aSlug").value = "";
-    document.getElementById("aHTML").value = "";
-    msg(document.getElementById("adminNotice"), "Website created.");
-    load();
-  }catch(error){
-    msg(document.getElementById("adminNotice"), error.message);
-  }finally{
-    button.disabled = false;
+    await api("/api/admin/me");
+    loginSection.style.display = "none";
+    dashSection.style.display = "block";
+    loadAll();
+  }catch{
+    loginSection.style.display = "block";
+    dashSection.style.display = "none";
   }
-};
+}
 
-async function load(){
-  try{
-    const data = await api("/api/admin/sites");
-    if(!data.sites.length){
-      sites.innerHTML = \`
-        <div class="card">
-          <h3>No websites</h3>
-          <p>Create your first website.</p>
-        </div>
-      \`;
-      return;
-    }
+async function loadAll(){
+  loadSites();
+  loadNotes();
+  loadPosts();
+  loadImages();
+}
 
-    sites.innerHTML = data.sites.map(site => \`
-      <div class="card" style="margin-bottom:12px">
-        <div class="card-top">
-          <div>
-            <h3 style="margin:0">\${esc(site.title)}</h3>
-            <p>/site/\${esc(site.slug)}</p>
-          </div>
-          <span class="pill">\${site.published ? "PUBLISHED" : "HIDDEN"}</span>
+async function loadSites(){
+  const d = await api("/api/admin/data");
+  const el = document.getElementById("siteList");
+  el.innerHTML = d.sites.map(s => \`
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-top">
+        <div>
+          <h3 style="margin:0">\${s.title}</h3>
+          <p style="color:#777">/site/\${s.slug} | Views: \${s.views || 0}</p>
         </div>
-        <div class="actions" style="justify-content:flex-start">
-          <a class="btn" target="_blank" href="/site/\${encodeURIComponent(site.slug)}">VIEW</a>
-          <button class="btn" onclick="toggleSite('\${site.id}')">\${site.published ? "UNPUBLISH" : "PUBLISH"}</button>
-          <button class="btn" onclick="deleteSite('\${site.id}')">DELETE</button>
-        </div>
-        <p>Views: \${Number(site.views || 0)}</p>
+        <span class="pill">\${s.published ? "LIVE" : "HIDDEN"}</span>
       </div>
-    \`).join("");
-  }catch(error){
-    sites.innerHTML = \`<div class="card">\${esc(error.message)}</div>\`;
-  }
+      <div class="actions" style="justify-content:flex-start">
+        <a class="btn" target="_blank" href="/site/\${s.slug}">VISIT</a>
+        <button class="btn" onclick="toggleItem('sites', '\${s.id}')">\${s.published ? 'HIDE' : 'SHOW'}</button>
+        <button class="btn danger" onclick="deleteItem('sites', '\${s.id}')">DELETE</button>
+      </div>
+    </div>
+  \`).join("") || "<p>No sites found.</p>";
 }
 
-async function toggleSite(id){
-  await api("/api/admin/sites/" + id + "/toggle", { method:"PATCH" });
-  load();
+async function loadNotes(){
+  const d = await api("/api/admin/data");
+  const el = document.getElementById("noteList");
+  el.innerHTML = d.notes.map(n => \`
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-top">
+        <h3 style="margin:0">\${n.title}</h3>
+        <span class="pill">\${n.published ? "PUBLIC" : "HIDDEN"}</span>
+      </div>
+      <div class="actions" style="justify-content:flex-start">
+        <a class="btn" target="_blank" href="/note/\${n.slug}">VIEW</a>
+        <button class="btn danger" onclick="deleteItem('notes', '\${n.id}')">DELETE</button>
+      </div>
+    </div>
+  \`).join("") || "<p>No notes found.</p>";
 }
 
-async function deleteSite(id){
-  if(!confirm("Delete this website permanently?")) return;
-  await api("/api/admin/sites/" + id, { method:"DELETE" });
-  load();
+async function loadPosts(){
+  const d = await api("/api/admin/data");
+  const el = document.getElementById("postList");
+  el.innerHTML = d.posts.map(p => \`
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-top">
+        <h3 style="margin:0">\${p.title}</h3>
+        <span class="pill">\${p.published ? "PUBLIC" : "HIDDEN"}</span>
+      </div>
+      <div class="actions" style="justify-content:flex-start">
+        <a class="btn" target="_blank" href="/post/\${p.slug}">VIEW</a>
+        <button class="btn danger" onclick="deleteItem('posts', '\${p.id}')">DELETE</button>
+      </div>
+    </div>
+  \`).join("") || "<p>No posts found.</p>";
 }
 
-function esc(value){
-  return String(value || "")
-    .replace(/&/g,"&amp;")
-    .replace(/</g,"&lt;")
-    .replace(/>/g,"&gt;")
-    .replace(/"/g,"&quot;")
-    .replace(/'/g,"&#039;");
+async function loadImages(){
+  const d = await api("/api/admin/data");
+  const el = document.getElementById("imageList");
+  el.innerHTML = d.images.map(img => \`
+    <div class="card">
+      <img src="/img/\${img.id}" style="width:100%; height:130px; object-fit:cover; border-radius:12px; margin-bottom:10px">
+      <div class="actions" style="justify-content:space-between">
+        <a class="btn" target="_blank" href="/img/\${img.id}">VIEW</a>
+        <button class="btn danger" onclick="deleteItem('images', '\${img.id}')">DEL</button>
+      </div>
+    </div>
+  \`).join("") || "<p>No images found.</p>";
 }
 
-check();
+async function createAdminSite(){
+  await api("/api/admin/sites", {
+    method:"POST",
+    headers:{ "Content-Type": "application/json" },
+    body:JSON.stringify({
+      title: document.getElementById("adSiteTitle").value,
+      slug: document.getElementById("adSiteSlug").value,
+      html: document.getElementById("adSiteHtml").value
+    })
+  });
+  document.getElementById("adSiteTitle").value = "";
+  document.getElementById("adSiteSlug").value = "";
+  document.getElementById("adSiteHtml").value = "";
+  loadSites();
+}
+
+async function createAdminNote(){
+  await api("/api/notes", {
+    method:"POST",
+    headers:{ "Content-Type": "application/json" },
+    body:JSON.stringify({
+      title: document.getElementById("adNoteTitle").value,
+      content: document.getElementById("adNoteContent").value
+    })
+  });
+  document.getElementById("adNoteTitle").value = "";
+  document.getElementById("adNoteContent").value = "";
+  loadNotes();
+}
+
+async function createAdminPost(){
+  await api("/api/admin/posts", {
+    method:"POST",
+    headers:{ "Content-Type": "application/json" },
+    body:JSON.stringify({
+      title: document.getElementById("adPostTitle").value,
+      content: document.getElementById("adPostContent").value
+    })
+  });
+  document.getElementById("adPostTitle").value = "";
+  document.getElementById("adPostContent").value = "";
+  loadPosts();
+}
+
+async function toggleItem(type, id){
+  await api(\`/api/admin/\${type}/\${id}/toggle\`, { method:"PATCH" });
+  loadAll();
+}
+
+async function deleteItem(type, id){
+  if(!confirm("Permanently delete this item?")) return;
+  await api(\`/api/admin/\${type}/\${id}\`, { method:"DELETE" });
+  loadAll();
+}
+
+initAdmin();
 </script>
 `
     )
@@ -1586,33 +1564,123 @@ check();
 });
 
 /* =========================================================
-   ROBOTS
+   ADMIN API ROUTES
 ========================================================= */
 
-app.get("/robots.txt", (req, res) => {
-  res.type("text/plain");
-  res.send(`User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/admin\n`);
+app.post("/api/admin/login", (req, res) => {
+  const { password } = req.body;
+  if (password !== ADMIN_PASS) {
+    return res.status(401).json({ ok: false, error: "Incorrect Password!" });
+  }
+
+  const token = genSecret();
+  sessions.set(token, { created: Date.now() });
+
+  res.cookie("sj_admin_token", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 14 * 24 * 60 * 60 * 1000,
+    path: "/"
+  });
+
+  res.json({ ok: true });
+});
+
+app.post("/api/admin/logout", (req, res) => {
+  const token = getCookie(req, "sj_admin_token");
+  if (token) sessions.delete(token);
+  res.clearCookie("sj_admin_token", { path: "/" });
+  res.json({ ok: true });
+});
+
+app.get("/api/admin/me", requireAdmin, (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get("/api/admin/data", requireAdmin, (req, res) => {
+  const db = getDB();
+  res.json({
+    ok: true,
+    sites: db.sites,
+    notes: db.notes,
+    posts: db.posts,
+    images: db.images.map((img) => ({ id: img.id, title: img.title, views: img.views }))
+  });
+});
+
+app.post("/api/admin/sites", requireAdmin, (req, res) => {
+  const { title, html } = req.body;
+  let slug = slugify(req.body.slug || title) || "site-" + genId(4);
+
+  const db = getDB();
+  db.sites.unshift({
+    id: genId(),
+    title: cleanText(title, 80),
+    slug,
+    html,
+    published: true,
+    views: 0,
+    createdAt: new Date().toISOString()
+  });
+  saveDB(db);
+  res.json({ ok: true });
+});
+
+app.post("/api/admin/posts", requireAdmin, (req, res) => {
+  const { title, content } = req.body;
+  const db = getDB();
+  db.posts.unshift({
+    id: genId(),
+    title: cleanText(title, 100),
+    slug: slugify(title) || "post-" + genId(4),
+    content,
+    published: true,
+    views: 0,
+    createdAt: new Date().toISOString()
+  });
+  saveDB(db);
+  res.json({ ok: true });
+});
+
+app.patch("/api/admin/:type/:id/toggle", requireAdmin, (req, res) => {
+  const { type, id } = req.params;
+  const db = getDB();
+  if (!db[type]) return res.status(400).json({ ok: false, error: "Invalid type" });
+
+  const item = db[type].find((x) => x.id === id);
+  if (item) {
+    item.published = item.published === false;
+    saveDB(db);
+  }
+  res.json({ ok: true });
+});
+
+app.delete("/api/admin/:type/:id", requireAdmin, (req, res) => {
+  const { type, id } = req.params;
+  const db = getDB();
+  if (!db[type]) return res.status(400).json({ ok: false, error: "Invalid type" });
+
+  db[type] = db[type].filter((x) => x.id !== id);
+  saveDB(db);
+  res.json({ ok: true });
 });
 
 /* =========================================================
-   404 & ERROR
+   404 HANDLER & SERVER START
 ========================================================= */
 
-function notFound(text) {
+function notFound(msgText) {
   return page(
-    "404",
+    "404 Not Found",
     `
 <main class="hero">
   <div class="wrap">
-    <div class="badge">
-      <span class="badge-dot"></span>
-      404
-    </div>
-    <h1>Not found.</h1>
-    <p>${escapeHTML(text)}</p>
+    <div class="badge"><span class="badge-dot"></span> 404 ERROR</div>
+    <h1>Page Not Found.</h1>
+    <p>${escapeHTML(msgText)}</p>
     <div class="actions">
-      <a href="/" class="btn primary">HOME</a>
-      <a href="/create" class="btn">CREATE</a>
+      <a href="/" class="btn primary">RETURN HOME</a>
     </div>
   </div>
 </main>
@@ -1621,19 +1689,9 @@ function notFound(text) {
 }
 
 app.use((req, res) => {
-  res.status(404).send(notFound("The page does not exist."));
+  res.status(404).send(notFound("The requested resource does not exist."));
 });
-
-app.use((err, req, res, next) => {
-  console.error("Server Global Error:", err);
-  if (res.headersSent) return next(err);
-  res.status(500).send(notFound("Server error."));
-});
-
-/* =========================================================
-   START
-========================================================= */
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`SJEMAR Hosting started on port ${PORT}`);
+  console.log(`SJEMAR Cloud All-in-One Engine running at http://0.0.0.0:${PORT}`);
 });
