@@ -1,7 +1,16 @@
+/**
+ * ============================================================================
+ * SJEMAR NEXT-GEN OLED ENGINE (ULTIMATE EDITION)
+ * Complete Single-File Node.js Backend & Cyber OLED Frontend
+ * Ready for Render / Railway / VPS Deployment
+ * ============================================================================
+ */
+
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const http = require("http");
 
 const app = express();
 
@@ -14,17 +23,26 @@ const DATA_FILE = path.join(DATA_DIR, "database.json");
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 
-app.use(express.json({ limit: "35mb" }));
-app.use(express.urlencoded({ extended: true, limit: "35mb" }));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 /* =========================================================
-   DATABASE INITIALIZATION & MANAGEMENT
+   DATABASE INITIALIZATION & MANAGEMENT (JSON ENGINE)
 ========================================================= */
 
 const initialDB = {
+  settings: {
+    siteName: "SJEMAR OLED",
+    maintenanceMode: false,
+    announcement: "⚡ Welcome to SJEMAR Next-Gen Engine. Secure HTML Hosting Active.",
+    announcementActive: true,
+    globalHeaderCode: "",
+    globalFooterCode: "",
+    defaultAntiTheft: true
+  },
   users: [],
   sites: [],
-  folders: ["General", "Updates", "Guides", "VIP Codes"],
+  folders: ["General", "Updates", "Guides", "VIP Codes", "Tools", "APKs"],
   posts: [
     {
       id: "p1",
@@ -32,28 +50,34 @@ const initialDB = {
       title: "SJEMAR Next-Gen OLED Engine Released",
       slug: "sjemar-engine-v1",
       bio: "Official release notes of the secure HTML to link publishing platform.",
-      content: "Welcome to SJEMAR. Build, host and protect your HTML, CSS and JS projects with real user anti-theft encryption.",
+      content: "Welcome to SJEMAR. Build, host, and protect your HTML, CSS, and JS projects with real-time anti-theft encryption, custom slugs, and dedicated isolation.",
       author: "Admin",
       views: 0,
+      likes: 0,
+      pinned: true,
+      comments: [
+        { id: "c1", author: "System", text: "Welcome everyone! Feel free to share your thoughts.", date: new Date().toISOString() }
+      ],
       createdAt: new Date().toISOString()
     }
   ],
   versions: [
-    { id: "v1", title: "Version 1.0", subtitle: "TikTok Facebook video download", link: "#" },
-    { id: "v2", title: "Version 2.0", subtitle: "temp mail website", link: "#" },
-    { id: "v3", title: "Version 2.5", subtitle: "bio link website", link: "#" },
-    { id: "v4", title: "Version 3.0", subtitle: "ai website", link: "#" },
-    { id: "v5", title: "Version 3.5", subtitle: "UID checker", link: "#" },
-    { id: "v6", title: "Version 4.0", subtitle: "Background Removal Tool", link: "#" },
-    { id: "v7", title: "Version 4.5", subtitle: "hosting code", link: "#" },
-    { id: "v8", title: "Version 5.0", subtitle: "Premium Resources", link: "#" },
-    { id: "v9", title: "Version 5.5", subtitle: "Html security", link: "#" }
+    { id: "v1", title: "Version 1.0", subtitle: "TikTok & Facebook Video Engine", link: "#" },
+    { id: "v2", title: "Version 2.0", subtitle: "Temp Mail Web Infrastructure", link: "#" },
+    { id: "v3", title: "Version 2.5", subtitle: "Bio Link Interactive Builder", link: "#" },
+    { id: "v4", title: "Version 3.0", subtitle: "AI Intelligent Website Generator", link: "#" },
+    { id: "v5", title: "Version 3.5", subtitle: "UID Identity Checker Tool", link: "#" },
+    { id: "v6", title: "Version 4.0", subtitle: "AI Background Removal Suite", link: "#" },
+    { id: "v7", title: "Version 4.5", subtitle: "Cloud Hosting Architecture", link: "#" },
+    { id: "v8", title: "Version 5.0", subtitle: "Premium Developer Resources", link: "#" },
+    { id: "v9", title: "Version 6.0", subtitle: "OLED Anti-Theft Protection Engine", link: "#" }
   ],
   resources: [
     { id: "r1", section: "RESOURCE", ribbon: "FREE", badge: "100% Free", title: "Free Website", icon: "triangle", slug: "create" },
-    { id: "r2", section: "APK", ribbon: "APK", badge: "100% Free", title: "apk building", icon: "valorant", slug: "create" },
-    { id: "r3", section: "REVIEW", ribbon: "REV", badge: "100% Free", title: "review project", icon: "spinner", slug: "posts" }
-  ]
+    { id: "r2", section: "APK", ribbon: "APK", badge: "Android Build", title: "APK Builder", icon: "valorant", slug: "create" },
+    { id: "r3", section: "REVIEW", ribbon: "REV", badge: "Community", title: "Review Project", icon: "spinner", slug: "posts" }
+  ],
+  logs: []
 };
 
 function initDB() {
@@ -63,7 +87,7 @@ function initDB() {
       fs.writeFileSync(DATA_FILE, JSON.stringify(initialDB, null, 2), "utf8");
     }
   } catch (err) {
-    console.error("DB Init Error:", err);
+    console.error("Database Init Error:", err);
   }
 }
 
@@ -72,10 +96,14 @@ function getDB() {
     initDB();
     if (fs.existsSync(DATA_FILE)) {
       const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-      return { ...initialDB, ...data };
+      return {
+        ...initialDB,
+        ...data,
+        settings: { ...initialDB.settings, ...(data.settings || {}) }
+      };
     }
   } catch (err) {
-    console.error("DB Read Error:", err);
+    console.error("Database Read Error:", err);
   }
   return { ...initialDB };
 }
@@ -85,8 +113,23 @@ function saveDB(db) {
     initDB();
     fs.writeFileSync(DATA_FILE, JSON.stringify(db || initialDB, null, 2), "utf8");
   } catch (err) {
-    console.error("DB Save Error:", err);
+    console.error("Database Save Error:", err);
   }
+}
+
+function addLog(action, details = "") {
+  try {
+    const db = getDB();
+    db.logs = db.logs || [];
+    db.logs.unshift({
+      id: genId(6),
+      action,
+      details,
+      timestamp: new Date().toISOString()
+    });
+    if (db.logs.length > 200) db.logs = db.logs.slice(0, 200);
+    saveDB(db);
+  } catch {}
 }
 
 initDB();
@@ -100,7 +143,7 @@ function genId(len = 10) {
 }
 
 function hashPassword(pass) {
-  return crypto.createHash("sha256").update(String(pass) + "SJEMAR_OLED_2026").digest("hex");
+  return crypto.createHash("sha256").update(String(pass) + "SJEMAR_ULTIMATE_2026").digest("hex");
 }
 
 function slugify(text) {
@@ -109,7 +152,7 @@ function slugify(text) {
     .trim()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 50);
+    .slice(0, 60);
 }
 
 function escapeHTML(text) {
@@ -117,7 +160,8 @@ function escapeHTML(text) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 const userSessions = new Map();
@@ -137,12 +181,14 @@ function getLoggedUser(req) {
   if (!token) return null;
   const sess = userSessions.get(token);
   if (!sess) return null;
-  if (Date.now() - sess.created > (sess.saveMe ? 30 : 1) * 24 * 60 * 60 * 1000) {
+  if (Date.now() - sess.created > (sess.saveMe ? 60 : 2) * 24 * 60 * 60 * 1000) {
     userSessions.delete(token);
     return null;
   }
   const db = getDB();
-  return db.users.find((u) => u.id === sess.userId) || null;
+  const user = db.users.find((u) => u.id === sess.userId);
+  if (user && user.banned) return null;
+  return user || null;
 }
 
 function isLoggedAdmin(req) {
@@ -152,38 +198,92 @@ function isLoggedAdmin(req) {
 }
 
 function requireAdmin(req, res, next) {
-  if (!isLoggedAdmin(req)) return res.status(401).json({ ok: false, error: "Admin access required" });
+  if (!isLoggedAdmin(req)) {
+    return res.status(401).json({ ok: false, error: "Admin access required. Please authenticate." });
+  }
   next();
 }
 
 function requireUser(req, res, next) {
   const user = getLoggedUser(req);
-  if (!user && !isLoggedAdmin(req)) return res.status(401).json({ ok: false, error: "Authentication required" });
-  req.user = user || { id: "admin", username: "Admin", role: "admin" };
+  if (isLoggedAdmin(req)) {
+    req.user = { id: "admin", username: "Super Admin", role: "admin" };
+    return next();
+  }
+  if (!user) {
+    return res.status(401).json({ ok: false, error: "Authentication required" });
+  }
+  req.user = user;
   next();
 }
 
+// Maintenance Mode Middleware
+app.use((req, res, next) => {
+  const db = getDB();
+  if (db.settings && db.settings.maintenanceMode) {
+    if (isLoggedAdmin(req) || req.path.startsWith("/admin") || req.path.startsWith("/api/admin")) {
+      return next();
+    }
+    return res.status(503).send(`
+      <!DOCTYPE html>
+      <html>
+      <head><meta charset="utf-8"><title>Under Maintenance</title></head>
+      <body style="background:#000; color:#fff; font-family:sans-serif; text-align:center; padding:100px 20px;">
+        <h1 style="font-size:32px; letter-spacing:2px">⚙️ SYSTEM MAINTENANCE</h1>
+        <p style="color:#888; margin-top:10px">We are upgrading our servers. Please check back shortly.</p>
+      </body>
+      </html>
+    `);
+  }
+  next();
+});
+
 /* =========================================================
-   SJEMAR iOS OLED DARK GLASS ENGINE UI
+   ANTI-THEFT JAVASCRIPT INJECTION SCRIPT
+========================================================= */
+
+const ANTI_THEFT_SCRIPT = `
+<script>
+(function(){
+  document.addEventListener('contextmenu', function(e){ e.preventDefault(); return false; });
+  document.addEventListener('keydown', function(e){
+    if(e.keyCode === 123 || (e.ctrlKey && e.shiftKey && (e.keyCode === 73 || e.keyCode === 74 || e.keyCode === 67)) || (e.ctrlKey && e.keyCode === 85)){
+      e.preventDefault();
+      return false;
+    }
+  });
+  document.addEventListener('dragstart', function(e){ e.preventDefault(); });
+})();
+</script>
+`;
+
+/* =========================================================
+   OLED DARK GLASS ENGINE UI
 ========================================================= */
 
 function page(title, content, script = "") {
+  const db = getDB();
+  const ann = db.settings.announcementActive && db.settings.announcement;
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#000000">
-<title>${escapeHTML(title)} — SJEMAR</title>
+<title>${escapeHTML(title)} — ${escapeHTML(db.settings.siteName || "SJEMAR")}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800;900&family=SF+Pro+Display:wght@400;500;600;700&display=swap" rel="stylesheet">
+${db.settings.globalHeaderCode || ""}
 
 <style>
 :root {
   --bg: #000000;
   --white: #ffffff;
-  --glass-bg: rgba(14, 14, 14, 0.75);
+  --accent: #00f2fe;
+  --glass-bg: rgba(14, 14, 14, 0.78);
   --glass-border: rgba(255, 255, 255, 0.12);
+  --glass-glow: rgba(255, 255, 255, 0.05);
 }
 
 * {
@@ -202,20 +302,28 @@ html, body {
 }
 
 body {
-  background:
-    radial-gradient(circle at 50% -10%, rgba(255, 255, 255, 0.08), transparent 45%),
-    #000000;
+  background: radial-gradient(circle at 50% -10%, rgba(255, 255, 255, 0.08), transparent 45%), #000000;
   display: flex;
   flex-direction: column;
 }
 
-/* DOCK BAR FIX & SAFE AREA */
 .container {
-  width: min(480px, 94%);
+  width: min(520px, 94%);
   margin: 0 auto;
-  padding: 20px 0 110px; /* Safe padding for bottom dock bar */
+  padding: 20px 0 120px;
   position: relative;
   z-index: 1;
+}
+
+/* BROADCAST NOTICE */
+.announcement-bar {
+  background: rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 8px 15px;
+  font-size: 11px;
+  text-align: center;
+  color: #ccc;
+  backdrop-filter: blur(10px);
 }
 
 /* ROTATING BORDER ANIMATION */
@@ -227,7 +335,7 @@ body {
 .rotating-border-box {
   position: relative;
   border-radius: 26px;
-  background: rgba(8, 8, 8, 0.85);
+  background: rgba(10, 10, 10, 0.9);
   padding: 1.5px;
   overflow: hidden;
   margin-bottom: 24px;
@@ -243,7 +351,7 @@ body {
   background: conic-gradient(
     transparent 0deg,
     transparent 100deg,
-    rgba(255, 255, 255, 0.9) 180deg,
+    rgba(255, 255, 255, 0.85) 180deg,
     transparent 260deg,
     transparent 360deg
   );
@@ -259,7 +367,7 @@ body {
   backdrop-filter: blur(35px) saturate(180%);
   -webkit-backdrop-filter: blur(35px) saturate(180%);
   border-radius: 24.5px;
-  padding: 26px 20px 22px;
+  padding: 24px 20px;
   text-align: center;
   box-shadow: 0 20px 50px rgba(0,0,0,0.9), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
@@ -338,12 +446,11 @@ body {
   transform: translateY(-2px);
 }
 
-/* NAVBAR */
 .nav {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: rgba(0, 0, 0, 0.8);
+  background: rgba(0, 0, 0, 0.85);
   backdrop-filter: blur(30px);
   -webkit-backdrop-filter: blur(30px);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -352,7 +459,7 @@ body {
   align-items: center;
 }
 .nav-inner {
-  width: min(480px, 94%);
+  width: min(520px, 94%);
   margin: auto;
   display: flex;
   justify-content: space-between;
@@ -381,37 +488,37 @@ body {
   box-shadow: 0 0 15px rgba(255, 255, 255, 0.4);
 }
 
-/* FLOATING iOS DOCK BAR (DOES NOT OVERFLOW) */
+/* FLOATING DOCK BAR */
 .dock-bar {
   position: fixed;
   bottom: 15px;
   left: 50%;
   transform: translateX(-50%);
-  width: min(440px, calc(100% - 24px));
-  height: 60px;
-  background: rgba(18, 18, 18, 0.85);
+  width: min(480px, calc(100% - 24px));
+  height: 62px;
+  background: rgba(18, 18, 18, 0.88);
   backdrop-filter: blur(35px) saturate(180%);
   -webkit-backdrop-filter: blur(35px) saturate(180%);
   border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 20px;
+  border-radius: 22px;
   display: flex;
   justify-content: space-around;
   align-items: center;
-  padding: 0 8px;
+  padding: 0 6px;
   z-index: 999;
-  box-shadow: 0 20px 40px rgba(0,0,0,0.8);
+  box-shadow: 0 20px 40px rgba(0,0,0,0.85);
 }
 .dock-item {
   color: #777777;
   text-decoration: none;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.5px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 3px;
-  padding: 6px 12px;
+  padding: 6px 10px;
   border-radius: 12px;
   transition: .2s;
 }
@@ -428,69 +535,8 @@ body {
   letter-spacing: 3px;
   color: #ffffff;
   text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
-  margin: 32px 0 16px;
+  margin: 30px 0 14px;
   text-transform: uppercase;
-}
-
-/* SOCIAL & WEATHER */
-.social-wrap {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  padding: 16px 20px;
-  display: flex;
-  justify-content: space-around;
-  align-items: center;
-  backdrop-filter: blur(35px);
-  margin-bottom: 25px;
-}
-.social-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: #ffffff;
-  transition: .25s;
-  text-decoration: none;
-}
-.social-icon:hover {
-  background: #ffffff;
-  color: #000000;
-  transform: scale(1.1);
-}
-
-.weather-card {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  border-radius: 24px;
-  padding: 22px;
-  backdrop-filter: blur(35px);
-}
-.weather-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 18px;
-}
-.weather-temp {
-  font-family: 'Orbitron', sans-serif;
-  font-size: 36px;
-  font-weight: 800;
-}
-.weather-loc-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: #ffffff;
-  font-size: 11px;
-  margin-top: 5px;
 }
 
 /* FORM ELEMENTS */
@@ -511,7 +557,7 @@ input:focus, textarea:focus, select:focus {
   border-color: #ffffff;
   box-shadow: 0 0 15px rgba(255, 255, 255, 0.2);
 }
-textarea { min-height: 200px; font-family: monospace; font-size: 13px; }
+textarea { min-height: 180px; font-family: monospace; font-size: 13px; }
 
 .notice {
   display: none;
@@ -557,13 +603,17 @@ textarea { min-height: 200px; font-family: monospace; font-size: 13px; }
   background: rgba(255, 255, 255, 0.05);
   color: #ffffff;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: .2s;
 }
 .btn-nav:hover { background: #ffffff; color: #000000; }
 
 .modal-overlay {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0, 0, 0, 0.85);
+  background: rgba(0, 0, 0, 0.88);
   backdrop-filter: blur(25px);
   z-index: 1000;
   display: none;
@@ -572,7 +622,7 @@ textarea { min-height: 200px; font-family: monospace; font-size: 13px; }
 }
 .modal-overlay.active { display: grid; }
 .modal-box {
-  width: min(380px, 100%);
+  width: min(440px, 100%);
   background: rgba(12, 12, 12, 0.95);
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 22px;
@@ -600,15 +650,55 @@ textarea { min-height: 200px; font-family: monospace; font-size: 13px; }
   border-radius: 14px;
   margin-bottom: 10px;
 }
+
+/* SOCIAL & WEATHER */
+.social-wrap {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  padding: 16px 20px;
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  backdrop-filter: blur(35px);
+  margin-bottom: 25px;
+}
+.social-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  transition: .25s;
+  text-decoration: none;
+}
+.social-icon:hover {
+  background: #ffffff;
+  color: #000000;
+  transform: scale(1.1);
+}
+
+.weather-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 24px;
+  padding: 22px;
+  backdrop-filter: blur(35px);
+}
 </style>
 </head>
 <body>
+
+${ann ? `<div class="announcement-bar">${escapeHTML(ann)}</div>` : ""}
 
 <nav class="nav">
   <div class="nav-inner">
     <a href="/" class="brand">
       <div class="brand-icon">S</div>
-      SJEMAR
+      ${escapeHTML(db.settings.siteName || "SJEMAR")}
     </a>
     <button class="btn-nav" onclick="openVersionModal()">VERSIONS</button>
   </div>
@@ -616,7 +706,7 @@ textarea { min-height: 200px; font-family: monospace; font-size: 13px; }
 
 ${content}
 
-<!-- FLOATING DOCK BAR (PERFECT MOBILE EXPERIENCE) -->
+<!-- FLOATING DOCK BAR -->
 <div class="dock-bar">
   <a href="/" class="dock-item">
     <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
@@ -644,7 +734,7 @@ ${content}
 <div class="modal-overlay" id="versionModal">
   <div class="modal-box">
     <div class="modal-head">
-      <h2>VERSIONS</h2>
+      <h2>SYSTEM VERSIONS</h2>
       <button class="modal-close" onclick="closeVersionModal()">&times;</button>
     </div>
     <div id="versionListContent"></div>
@@ -678,13 +768,13 @@ async function loadVersions(){
 </script>
 
 ${script}
-
+${db.settings.globalFooterCode || ""}
 </body>
 </html>`;
 }
 
 /* =========================================================
-   1. HOME PAGE
+   1. HOME PAGE ROUTE
 ========================================================= */
 
 app.get("/", (req, res) => {
@@ -717,7 +807,7 @@ app.get("/", (req, res) => {
         </div>
 
         <a href="/${encodeURIComponent(r.slug)}" class="btn-cyber-view">
-          VIEW
+          EXPLORE
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="3"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
         </a>
       </div>
@@ -744,25 +834,20 @@ app.get("/", (req, res) => {
 
   <div class="section-title">WEATHER</div>
   <div class="weather-card">
-    <div class="weather-top">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px">
       <div>
-        <div class="weather-temp">30.9°C</div>
-        <div class="weather-loc-badge">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="#ffffff"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
+        <div style="font-family:'Orbitron'; font-size:36px; font-weight:800">30.9°C</div>
+        <div style="display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:20px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.15); font-size:11px; margin-top:5px">
           BANGLADESH
         </div>
       </div>
-      <div class="weather-status">
+      <div style="text-align:right">
         <svg width="45" height="45" viewBox="0 0 64 64">
           <circle cx="38" cy="26" r="14" fill="#ffffff"/>
           <path d="M20 44h28a10 10 0 0 0 0-20 14 14 0 0 0-27-2A10 10 0 0 0 20 44z" fill="#777777"/>
         </svg>
-        <div style="margin-top:4px">CLEAR SKY</div>
+        <div style="margin-top:4px; font-size:12px; color:#aaa">CLEAR SKY</div>
       </div>
-    </div>
-    <div style="display:flex; justify-content:space-between; border-top:1px solid rgba(255,255,255,0.08); padding-top:12px; color:#777; font-size:13px">
-      <div>💨 Wind 12km/h</div>
-      <div>💧 Humidity 45%</div>
     </div>
   </div>
 </main>
@@ -777,7 +862,7 @@ app.get("/api/public/versions", (req, res) => {
 });
 
 /* =========================================================
-   2. HTML TO LINK CREATOR (HIDDEN LOGIN & UNIQUE SLUG)
+   2. HTML TO LINK CREATOR (ADVANCED SUITE)
 ========================================================= */
 
 app.get("/create", (req, res) => {
@@ -788,11 +873,11 @@ app.get("/create", (req, res) => {
 <main class="container">
   <div class="section-title">HTML TO LINK SUITE</div>
 
-  <!-- 1. HIDDEN AUTH BOX (IF NOT LOGGED IN) -->
+  <!-- AUTH GATE BOX -->
   <div id="authGateBox" class="cyber-card" style="text-align:left; display:none; margin-bottom:20px">
     <div class="card-top-pill">AUTHENTICATION REQUIRED</div>
     <h3 style="font-family:'Orbitron'; font-size:16px; margin:10px 0 4px">Login or Create Account</h3>
-    <p style="color:#777; font-size:12px; margin-bottom:16px">Claim your unique ownership so no one can steal your code.</p>
+    <p style="color:#777; font-size:12px; margin-bottom:16px">Claim your project ownership with real isolation protection.</p>
 
     <div class="field">
       <label>USERNAME</label>
@@ -805,14 +890,14 @@ app.get("/create", (req, res) => {
 
     <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#aaa; margin-bottom:15px; cursor:pointer">
       <input type="checkbox" id="gateSaveMe" checked style="width:16px; height:16px">
-      Save Me (Stay logged in)
+      Save Me (Stay logged in for 60 days)
     </label>
 
     <div id="gateNotice" class="notice"></div>
     <button id="gateBtn" class="btn-cyber-view">CONTINUE TO PUBLISHER</button>
   </div>
 
-  <!-- 2. PUBLISHER SUITE -->
+  <!-- PUBLISHER SUITE -->
   <div id="publisherSuite" class="cyber-card" style="text-align:left">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
       <span id="userBadge" class="card-top-pill" style="margin:0">LOGGED IN</span>
@@ -821,13 +906,13 @@ app.get("/create", (req, res) => {
 
     <div class="field">
       <label>PROJECT TITLE *</label>
-      <input id="pTitle" placeholder="My Awesome Project">
+      <input id="pTitle" placeholder="My Next-Gen Website">
     </div>
 
     <div class="field">
       <label>UNIQUE SLUG (NEVER USED BEFORE) *</label>
       <div style="position:relative">
-        <input id="pSlug" placeholder="unique-project-name" oninput="checkSlugAvailability()">
+        <input id="pSlug" placeholder="my-awesome-site" oninput="checkSlugAvailability()">
         <span id="slugStatus" style="position:absolute; right:12px; top:13px; font-size:11px; font-weight:700"></span>
       </div>
     </div>
@@ -835,6 +920,11 @@ app.get("/create", (req, res) => {
     <div class="field">
       <label>PROJECT BIO / DESCRIPTION</label>
       <input id="pBio" placeholder="Short description of this website...">
+    </div>
+
+    <div class="field">
+      <label>OPTIONAL SITE ACCESS PASSWORD</label>
+      <input id="pSitePass" type="password" placeholder="Leave empty for public site">
     </div>
 
     <div class="field">
@@ -848,7 +938,7 @@ app.get("/create", (req, res) => {
     </div>
 
     <div class="field">
-      <label>CUSTOM JAVASCRIPT (PASTE JS - OPTIONAL)</label>
+      <label>CUSTOM JAVASCRIPT (OPTIONAL)</label>
       <textarea id="pJs" style="min-height:100px" placeholder="// console.log('Custom JS injected');"></textarea>
     </div>
 
@@ -857,12 +947,17 @@ app.get("/create", (req, res) => {
       <textarea id="pCss" style="min-height:100px" placeholder="/* body { background: #000; } */"></textarea>
     </div>
 
+    <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#aaa; margin-bottom:18px; cursor:pointer">
+      <input type="checkbox" id="pAntiTheft" checked style="width:16px; height:16px">
+      Enable Anti-Theft (Disable right click & Inspect element)
+    </label>
+
     <div id="pubNotice" class="notice"></div>
     <button id="pubBtn" class="btn-cyber-view">PUBLISH & GENERATE LINK</button>
 
     <!-- RESULT CARD -->
     <div id="pubResult" class="result">
-      <strong style="color:#fff">Website Published!</strong>
+      <strong style="color:#fff">Website Published Successfully!</strong>
       <code id="pubUrl"></code>
       <div style="display:flex; gap:8px; margin-top:10px">
         <a id="pubOpen" target="_blank" class="btn-cyber-view">VISIT SITE</a>
@@ -891,7 +986,7 @@ async function syncAuth(){
 }
 syncAuth();
 
-// GATE LOGIN / REGISTER
+// GATE AUTH
 document.getElementById("gateBtn").onclick = async () => {
   const username = document.getElementById("gateUser").value.trim();
   const password = document.getElementById("gatePass").value.trim();
@@ -933,7 +1028,7 @@ document.getElementById("fileUpload").onchange = (e) => {
   reader.readAsText(file);
 };
 
-// LIVE UNIQUE SLUG CHECKER
+// LIVE SLUG CHECK
 let slugTimer;
 async function checkSlugAvailability(){
   clearTimeout(slugTimer);
@@ -959,9 +1054,11 @@ document.getElementById("pubBtn").onclick = async () => {
   const title = document.getElementById("pTitle").value.trim();
   const slug = document.getElementById("pSlug").value.trim();
   const bio = document.getElementById("pBio").value.trim();
+  const pass = document.getElementById("pSitePass").value.trim();
   const html = document.getElementById("pHtml").value.trim();
   const js = document.getElementById("pJs").value.trim();
   const css = document.getElementById("pCss").value.trim();
+  const antiTheft = document.getElementById("pAntiTheft").checked;
   const not = document.getElementById("pubNotice");
 
   if(!title || !html){
@@ -974,7 +1071,7 @@ document.getElementById("pubBtn").onclick = async () => {
     const r = await fetch("/api/publish", {
       method:"POST",
       headers:{ "Content-Type": "application/json" },
-      body:JSON.stringify({ title, slug, bio, html, js, css })
+      body:JSON.stringify({ title, slug, bio, sitePassword: pass, html, js, css, antiTheft })
     });
     const d = await r.json();
     if(!r.ok || !d.ok) throw new Error(d.error || "Publish failed");
@@ -1014,7 +1111,7 @@ app.get("/api/check-slug", (req, res) => {
   res.json({ ok: true, available: !exist && slug.length >= 2 });
 });
 
-/* QUICK AUTH / LOGIN OR REGISTER */
+/* AUTH CONTROLLERS */
 app.post("/api/auth/quick-auth", (req, res) => {
   const username = String(req.body.username || "").trim();
   const password = String(req.body.password || "").trim();
@@ -1028,25 +1125,31 @@ app.post("/api/auth/quick-auth", (req, res) => {
   let user = db.users.find((u) => u.username.toLowerCase() === username.toLowerCase());
 
   if (user) {
+    if (user.banned) {
+      return res.status(403).json({ ok: false, error: "This account has been suspended by Admin" });
+    }
     if (user.password !== hashPassword(password)) {
-      return res.status(401).json({ ok: false, error: "Incorrect password for this username" });
+      return res.status(401).json({ ok: false, error: "Incorrect password for this account" });
     }
   } else {
     user = {
       id: genId(),
       username,
       password: hashPassword(password),
+      role: "user",
+      banned: false,
       createdAt: new Date().toISOString()
     };
     db.users.push(user);
     saveDB(db);
+    addLog("USER_REGISTER", `User registered: ${username}`);
   }
 
   const tok = genId(24);
   userSessions.set(tok, { userId: user.id, saveMe, created: Date.now() });
   res.cookie("sj_user_token", tok, {
     httpOnly: true,
-    maxAge: (saveMe ? 30 : 1) * 24 * 60 * 60 * 1000,
+    maxAge: (saveMe ? 60 : 2) * 24 * 60 * 60 * 1000,
     path: "/"
   });
 
@@ -1062,14 +1165,14 @@ app.post("/api/auth/logout", (req, res) => {
 
 app.get("/api/auth/me", (req, res) => {
   const user = getLoggedUser(req);
-  if (user) return res.json({ ok: true, user: { id: user.id, username: user.username } });
-  if (isLoggedAdmin(req)) return res.json({ ok: true, user: { id: "admin", username: "Super Admin" } });
+  if (user) return res.json({ ok: true, user: { id: user.id, username: user.username, role: user.role } });
+  if (isLoggedAdmin(req)) return res.json({ ok: true, user: { id: "admin", username: "Super Admin", role: "admin" } });
   res.json({ ok: false });
 });
 
-/* PUBLISH ENDPOINT WITH CUSTOM JS/CSS INJECTION */
+/* PUBLISH ENDPOINT WITH CUSTOM JS/CSS/ANTI-THEFT INJECTION */
 app.post("/api/publish", requireUser, (req, res) => {
-  const { title, bio, html, js, css } = req.body;
+  const { title, bio, sitePassword, html, js, css, antiTheft } = req.body;
   const db = getDB();
   let slug = slugify(req.body.slug || title);
 
@@ -1078,7 +1181,7 @@ app.post("/api/publish", requireUser, (req, res) => {
   if (!slug) slug = "site-" + genId(4);
 
   if (db.sites.some((s) => s.slug === slug)) {
-    return res.status(409).json({ ok: false, error: "This slug is already taken. Choose another!" });
+    return res.status(409).json({ ok: false, error: "This slug is already taken. Please choose another." });
   }
 
   let fullHtml = html;
@@ -1088,6 +1191,9 @@ app.post("/api/publish", requireUser, (req, res) => {
   if (js && js.trim()) {
     fullHtml = fullHtml + `\n<script>\n${js}\n</script>`;
   }
+  if (antiTheft) {
+    fullHtml = fullHtml + "\n" + ANTI_THEFT_SCRIPT;
+  }
 
   const site = {
     id: genId(),
@@ -1096,6 +1202,11 @@ app.post("/api/publish", requireUser, (req, res) => {
     title,
     slug,
     bio: bio || "",
+    rawHtml: html,
+    rawCss: css || "",
+    rawJs: js || "",
+    antiTheft: Boolean(antiTheft),
+    sitePassword: sitePassword ? hashPassword(sitePassword) : null,
     html: fullHtml,
     published: true,
     views: 0,
@@ -1105,6 +1216,7 @@ app.post("/api/publish", requireUser, (req, res) => {
 
   db.sites.unshift(site);
   saveDB(db);
+  addLog("SITE_PUBLISH", `Site published: ${title} (/site/${slug}) by ${req.user.username}`);
 
   const proto = req.headers["x-forwarded-proto"] || req.protocol;
   const host = req.get("host");
@@ -1112,17 +1224,60 @@ app.post("/api/publish", requireUser, (req, res) => {
   res.json({ ok: true, site: { url: `${proto}://${host}/site/${site.slug}` } });
 });
 
+/* SITE SERVING (WITH PASSWORD PROTECTION GATE) */
 app.get("/site/:slug", (req, res) => {
   const db = getDB();
   const site = db.sites.find((s) => s.slug === req.params.slug);
-  if (!site || site.published === false) return res.status(404).send("Website Not Found");
+  if (!site || site.published === false) return res.status(404).send("Website Not Found or Private.");
+
+  if (site.sitePassword) {
+    const enteredPass = req.query.pass;
+    if (!enteredPass || hashPassword(enteredPass) !== site.sitePassword) {
+      return res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Protected Site — SJEMAR</title>
+          <style>
+            body { background: #000; color: #fff; font-family: -apple-system, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; }
+            .box { background: rgba(20,20,20,0.9); border: 1px solid rgba(255,255,255,0.15); padding: 30px; border-radius: 20px; width: min(340px, 90%); text-align: center; }
+            input { width: 100%; padding: 12px; border-radius: 12px; background: #000; border: 1px solid #333; color: #fff; margin: 15px 0; box-sizing: border-box; }
+            button { width: 100%; padding: 12px; border-radius: 12px; background: #fff; color: #000; font-weight: bold; border: none; cursor: pointer; }
+          </style>
+        </head>
+        <body>
+          <div class="box">
+            <h3>🔒 Password Protected</h3>
+            <p style="color:#777; font-size:12px; margin-top:5px">This website is locked by its author.</p>
+            <form method="GET">
+              <input type="password" name="pass" placeholder="Enter Access Password" required>
+              <button type="submit">UNLOCK SITE</button>
+            </form>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+  }
+
   site.views = Number(site.views || 0) + 1;
   saveDB(db);
   res.type("html").send(site.html);
 });
 
+/* DOWNLOAD RAW HTML EXPORT */
+app.get("/site/:slug/download", (req, res) => {
+  const db = getDB();
+  const site = db.sites.find((s) => s.slug === req.params.slug);
+  if (!site) return res.status(404).send("Not Found");
+  res.setHeader("Content-Disposition", `attachment; filename="${site.slug}.html"`);
+  res.type("html").send(site.html);
+});
+
 /* =========================================================
-   3. USER VAULT (MY SITES, EDIT, DELETE & STATS)
+   3. USER VAULT (CRUD, STATS & DUPLICATE)
 ========================================================= */
 
 app.get("/dashboard", (req, res) => {
@@ -1141,7 +1296,7 @@ app.get("/dashboard", (req, res) => {
       <h3 style="margin:0; font-family:'Orbitron'">AUTHOR: ${escapeHTML(user ? user.username : "ADMIN")}</h3>
       <a href="/create" class="btn-nav">+ NEW SITE</a>
     </div>
-    <p style="color:#777; font-size:12px; margin-bottom:20px">Protected by Anti-Theft Isolation.</p>
+    <p style="color:#777; font-size:12px; margin-bottom:20px">Protected by Real-Time Anti-Theft Isolation.</p>
     
     <div id="vaultSites"></div>
   </div>
@@ -1153,21 +1308,36 @@ async function loadVault(){
   const r = await fetch("/api/user/vault-data");
   const d = await r.json();
   const el = document.getElementById("vaultSites");
+  if(!d.sites || d.sites.length === 0){
+    el.innerHTML = "<p style='color:#777'>No hosted sites found. Create your first site!</p>";
+    return;
+  }
   el.innerHTML = d.sites.map(s => \`
     <div style="padding:14px; border:1px solid rgba(255,255,255,0.12); border-radius:14px; margin-bottom:12px; background:rgba(0,0,0,0.6)">
       <div style="display:flex; justify-content:space-between; align-items:flex-start">
         <div>
           <h4 style="color:#ffffff; margin:0; font-size:16px">\${s.title}</h4>
-          <p style="font-size:11px; color:#777; margin:4px 0">/site/\${s.slug} | Views: \${s.views || 0}</p>
-          <p style="font-size:12px; color:#aaa">\${s.bio || 'No bio'}</p>
+          <p style="font-size:11px; color:#777; margin:4px 0">/site/\${s.slug} | Views: \${s.views || 0} \${s.sitePassword ? ' | 🔒 Password Protected' : ''}</p>
+          <p style="font-size:12px; color:#aaa">\${s.bio || 'No bio provided'}</p>
         </div>
       </div>
-      <div style="display:flex; gap:8px; margin-top:10px">
+      <div style="display:flex; gap:6px; margin-top:12px; flex-wrap:wrap">
         <a href="/site/\${s.slug}" target="_blank" class="btn-nav">VISIT</a>
+        <a href="/site/\${s.slug}/download" class="btn-nav">DOWNLOAD</a>
+        <button onclick="cloneSite('\${s.id}')" class="btn-nav">CLONE</button>
         <button onclick="deleteSite('\${s.id}')" class="btn-nav" style="border-color:#ff4444; color:#ff4444">DELETE</button>
       </div>
     </div>
-  \`).join("") || "<p style='color:#777'>No hosted sites found.</p>";
+  \`).join("");
+}
+
+async function cloneSite(id){
+  const r = await fetch("/api/sites/" + id + "/clone", { method:"POST" });
+  const d = await r.json();
+  if(d.ok){
+    alert("Site Cloned Successfully!");
+    loadVault();
+  }
 }
 
 async function deleteSite(id){
@@ -1189,20 +1359,45 @@ app.get("/api/user/vault-data", requireUser, (req, res) => {
   res.json({ ok: true, sites: mySites });
 });
 
+app.post("/api/sites/:id/clone", requireUser, (req, res) => {
+  const db = getDB();
+  const site = db.sites.find((s) => s.id === req.params.id);
+  if (!site) return res.status(404).json({ ok: false, error: "Site not found" });
+  if (site.userId !== req.user.id && req.user.role !== "admin") {
+    return res.status(403).json({ ok: false, error: "Access Denied" });
+  }
+
+  const newSlug = site.slug + "-copy-" + genId(3);
+  const cloned = {
+    ...site,
+    id: genId(),
+    title: site.title + " (Copy)",
+    slug: newSlug,
+    views: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  db.sites.unshift(cloned);
+  saveDB(db);
+  res.json({ ok: true, site: cloned });
+});
+
 app.delete("/api/sites/:id", requireUser, (req, res) => {
   const db = getDB();
   const site = db.sites.find((s) => s.id === req.params.id);
-  if (!site) return res.status(404).json({ ok: false, error: "Not found" });
+  if (!site) return res.status(404).json({ ok: false, error: "Site not found" });
   if (site.userId !== req.user.id && req.user.role !== "admin") {
-    return res.status(403).json({ ok: false, error: "Access Denied: You do not own this site" });
+    return res.status(403).json({ ok: false, error: "Access Denied" });
   }
   db.sites = db.sites.filter((s) => s.id !== req.params.id);
   saveDB(db);
+  addLog("SITE_DELETE", `Site deleted: ${site.title} by ${req.user.username}`);
   res.json({ ok: true });
 });
 
 /* =========================================================
-   4. POSTS & FOLDER SYSTEM
+   4. POSTS & FOLDER DISCUSSIONS
 ========================================================= */
 
 app.get("/posts", (req, res) => {
@@ -1230,12 +1425,15 @@ app.get("/posts", (req, res) => {
       <div class="rotating-border-box post-card" data-folder="${escapeHTML(p.folder || "General")}">
         <div class="cyber-card" style="text-align:left">
           <div style="display:flex; justify-content:space-between; align-items:center">
-            <span class="card-top-pill">${escapeHTML(p.folder || "General")}</span>
+            <span class="card-top-pill">${p.pinned ? "📌 " : ""}${escapeHTML(p.folder || "General")}</span>
             <span style="font-size:11px; color:#777">${new Date(p.createdAt).toLocaleDateString()}</span>
           </div>
           <h3 style="font-family:'Orbitron'; font-size:17px; margin:8px 0">${escapeHTML(p.title)}</h3>
           <p style="color:#888; font-size:13px; margin-bottom:14px">${escapeHTML(p.bio || p.content.slice(0, 100))}</p>
-          <a href="/post/${encodeURIComponent(p.slug)}" class="btn-cyber-view">READ ARTICLE</a>
+          <div style="display:flex; justify-content:space-between; align-items:center">
+            <a href="/post/${encodeURIComponent(p.slug)}" class="btn-cyber-view" style="width:auto; padding:8px 18px">READ ARTICLE</a>
+            <span style="font-size:12px; color:#666">❤️ ${p.likes || 0} | 💬 ${(p.comments || []).length}</span>
+          </div>
         </div>
       </div>
     `
@@ -1276,33 +1474,112 @@ app.get("/post/:slug", (req, res) => {
       `
 <main class="container">
   <div class="cyber-card" style="text-align:left">
-    <div class="card-top-pill">${escapeHTML(post.folder || "General")}</div>
+    <div class="card-top-pill">${post.pinned ? "📌 " : ""}${escapeHTML(post.folder || "General")}</div>
     <h1 style="font-family:'Orbitron'; font-size:22px; margin:10px 0">${escapeHTML(post.title)}</h1>
-    <p style="color:#777; font-size:12px; margin-bottom:16px">Published by ${escapeHTML(post.author)} on ${new Date(post.createdAt).toLocaleDateString()}</p>
+    <p style="color:#777; font-size:12px; margin-bottom:16px">Published by ${escapeHTML(post.author)} on ${new Date(post.createdAt).toLocaleDateString()} | Views: ${post.views}</p>
     <hr style="border:0; border-top:1px solid rgba(255,255,255,0.1); margin:15px 0">
     <div style="color:#ccc; font-size:15px; line-height:1.75; white-space:pre-wrap">${escapeHTML(post.content)}</div>
+
+    <div style="margin-top:25px; display:flex; gap:10px">
+      <button onclick="likePost('${post.id}')" class="btn-nav">❤️ LIKE (<span id="likeCount">${post.likes || 0}</span>)</button>
+    </div>
+
+    <!-- COMMENTS SECTION -->
+    <div style="margin-top:30px; border-top:1px solid rgba(255,255,255,0.1); padding-top:20px">
+      <h3 style="font-family:'Orbitron'; font-size:14px; margin-bottom:12px">COMMENTS</h3>
+      
+      <div id="commentsList" style="margin-bottom:15px">
+        ${(post.comments || [])
+          .map(
+            (c) => `
+          <div style="background:rgba(255,255,255,0.03); padding:10px 12px; border-radius:10px; margin-bottom:8px; border:1px solid rgba(255,255,255,0.06)">
+            <div style="font-size:11px; color:#888; font-weight:bold">${escapeHTML(c.author)} <span style="font-weight:normal; font-size:10px">${new Date(c.date).toLocaleDateString()}</span></div>
+            <div style="font-size:13px; color:#ddd; margin-top:4px">${escapeHTML(c.text)}</div>
+          </div>
+        `
+          )
+          .join("")}
+      </div>
+
+      <div class="field">
+        <input id="cAuthor" placeholder="Your Name">
+      </div>
+      <div class="field">
+        <input id="cText" placeholder="Write a comment...">
+      </div>
+      <button onclick="submitComment('${post.id}')" class="btn-cyber-view" style="font-size:11px; padding:10px">ADD COMMENT</button>
+    </div>
   </div>
 </main>
+`,
+      `
+<script>
+async function likePost(id){
+  const r = await fetch("/api/posts/" + id + "/like", { method:"POST" });
+  const d = await r.json();
+  if(d.ok){
+    document.getElementById("likeCount").textContent = d.likes;
+  }
+}
+
+async function submitComment(id){
+  const author = document.getElementById("cAuthor").value.trim() || "Anonymous";
+  const text = document.getElementById("cText").value.trim();
+  if(!text) return;
+
+  const r = await fetch("/api/posts/" + id + "/comment", {
+    method:"POST",
+    headers:{ "Content-Type": "application/json" },
+    body:JSON.stringify({ author, text })
+  });
+  const d = await r.json();
+  if(d.ok) location.reload();
+}
+</script>
 `
     )
   );
 });
 
+app.post("/api/posts/:id/like", (req, res) => {
+  const db = getDB();
+  const post = db.posts.find((p) => p.id === req.params.id);
+  if (!post) return res.status(404).json({ ok: false });
+  post.likes = (post.likes || 0) + 1;
+  saveDB(db);
+  res.json({ ok: true, likes: post.likes });
+});
+
+app.post("/api/posts/:id/comment", (req, res) => {
+  const db = getDB();
+  const post = db.posts.find((p) => p.id === req.params.id);
+  if (!post) return res.status(404).json({ ok: false });
+  post.comments = post.comments || [];
+  post.comments.push({
+    id: genId(6),
+    author: req.body.author || "Anonymous",
+    text: req.body.text || "",
+    date: new Date().toISOString()
+  });
+  saveDB(db);
+  res.json({ ok: true });
+});
+
 /* =========================================================
-   5. SUPER ADMIN (FOLDER POSTS & USER HTML ASSIGN)
+   5. SUPER ADMIN MASTER SUITE (FULL CONTROL)
 ========================================================= */
 
 app.get("/admin", (req, res) => {
   res.send(
     page(
-      "Admin Control",
+      "Admin Control Master",
       `
-<main class="container">
+<main class="container" style="width:min(600px, 94%)">
   <div class="section-title">ADMIN MASTER SUITE</div>
 
   <div id="adminLoginBox" class="cyber-card" style="text-align:left">
     <div class="field">
-      <label>ADMIN PASSWORD</label>
+      <label>SUPER ADMIN PASSWORD</label>
       <input id="adKey" type="password" placeholder="••••••••">
     </div>
     <div id="adNotice" class="notice"></div>
@@ -1310,38 +1587,93 @@ app.get("/admin", (req, res) => {
   </div>
 
   <div id="adminDashBox" style="display:none">
-    
-    <!-- 1. CREATE POST IN FOLDER -->
-    <div class="cyber-card" style="text-align:left; margin-bottom:20px">
-      <div class="section-title" style="margin-top:0">PUBLISH FOLDER POST</div>
-      <div class="field">
-        <label>SELECT / CREATE FOLDER</label>
-        <select id="adPostFolder"></select>
-      </div>
-      <div class="field"><input id="adNewFolderName" placeholder="Or New Folder Name (Optional)"></div>
-      <div class="field"><input id="adPostTitle" placeholder="Post Title"></div>
-      <div class="field"><input id="adPostBio" placeholder="Short Bio / Summary"></div>
-      <div class="field"><textarea id="adPostContent" placeholder="Full Article Content..."></textarea></div>
-      <button onclick="publishFolderPost()" class="btn-cyber-view">PUBLISH TO FOLDER</button>
+
+    <!-- ADMIN TABS -->
+    <div style="display:flex; gap:6px; overflow-x:auto; padding-bottom:12px; margin-bottom:15px">
+      <button class="btn-nav" onclick="showTab('tab-stats')">STATS</button>
+      <button class="btn-nav" onclick="showTab('tab-users')">USERS</button>
+      <button class="btn-nav" onclick="showTab('tab-sites')">SITES</button>
+      <button class="btn-nav" onclick="showTab('tab-posts')">POSTS</button>
+      <button class="btn-nav" onclick="showTab('tab-settings')">SETTINGS</button>
+      <button class="btn-nav" onclick="showTab('tab-logs')">LOGS</button>
     </div>
 
-    <!-- 2. ASSIGN HTML TO USER -->
-    <div class="cyber-card" style="text-align:left; margin-bottom:20px">
-      <div class="section-title" style="margin-top:0">ASSIGN HTML TO SPECIFIC USER</div>
+    <!-- TAB 1: STATS & QUICK ACTIONS -->
+    <div id="tab-stats" class="admin-tab cyber-card" style="text-align:left">
+      <h3 style="font-family:'Orbitron'; font-size:16px; margin-bottom:15px">SYSTEM OVERVIEW</h3>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:15px">
+        <div style="background:rgba(255,255,255,0.05); padding:15px; border-radius:14px; text-align:center">
+          <div style="font-size:24px; font-weight:bold" id="statUsers">0</div>
+          <div style="font-size:11px; color:#888">TOTAL USERS</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.05); padding:15px; border-radius:14px; text-align:center">
+          <div style="font-size:24px; font-weight:bold" id="statSites">0</div>
+          <div style="font-size:11px; color:#888">TOTAL WEBSITES</div>
+        </div>
+      </div>
+      <a href="/api/admin/backup-download" class="btn-cyber-view" style="margin-bottom:10px">DOWNLOAD FULL JSON BACKUP</a>
+    </div>
+
+    <!-- TAB 2: USER MANAGEMENT -->
+    <div id="tab-users" class="admin-tab cyber-card" style="text-align:left; display:none">
+      <h3 style="font-family:'Orbitron'; font-size:16px; margin-bottom:15px">USER MANAGEMENT</h3>
+      <div id="usersListContent"></div>
+    </div>
+
+    <!-- TAB 3: SITE ASSIGN & SITES LIST -->
+    <div id="tab-sites" class="admin-tab cyber-card" style="text-align:left; display:none">
+      <h3 style="font-family:'Orbitron'; font-size:16px; margin-bottom:15px">ASSIGN HTML CODE TO USER</h3>
       <div class="field">
         <label>TARGET USER</label>
         <select id="targetUserSelect"></select>
       </div>
       <div class="field"><input id="asTitle" placeholder="Custom Website Title"></div>
-      <div class="field"><input id="asSlug" placeholder="assigned-slug"></div>
+      <div class="field"><input id="asSlug" placeholder="custom-unique-slug"></div>
       <div class="field"><textarea id="asHtml" placeholder="<!DOCTYPE html>..."></textarea></div>
-      <button onclick="assignHtmlToUser()" class="btn-cyber-view">ASSIGN CODE TO USER</button>
+      <button onclick="assignHtmlToUser()" class="btn-cyber-view" style="margin-bottom:25px">ASSIGN CODE TO USER</button>
+
+      <h3 style="font-family:'Orbitron'; font-size:16px; margin-bottom:15px">ALL HOSTED WEBSITES</h3>
+      <div id="sitesListContent"></div>
     </div>
 
-    <!-- 3. ALL USERS & SITES -->
-    <div class="cyber-card" style="text-align:left">
-      <div class="section-title" style="margin-top:0">SYSTEM USERS & WEBSITES</div>
-      <div id="adminDataList"></div>
+    <!-- TAB 4: POSTS & FOLDERS -->
+    <div id="tab-posts" class="admin-tab cyber-card" style="text-align:left; display:none">
+      <h3 style="font-family:'Orbitron'; font-size:16px; margin-bottom:15px">CREATE FOLDER POST</h3>
+      <div class="field">
+        <label>FOLDER</label>
+        <select id="adPostFolder"></select>
+      </div>
+      <div class="field"><input id="adNewFolderName" placeholder="Or create new folder name..."></div>
+      <div class="field"><input id="adPostTitle" placeholder="Article Title"></div>
+      <div class="field"><input id="adPostBio" placeholder="Short Summary"></div>
+      <div class="field"><textarea id="adPostContent" placeholder="Full Article Content..."></textarea></div>
+      <button onclick="publishFolderPost()" class="btn-cyber-view">PUBLISH POST</button>
+    </div>
+
+    <!-- TAB 5: SYSTEM SETTINGS -->
+    <div id="tab-settings" class="admin-tab cyber-card" style="text-align:left; display:none">
+      <h3 style="font-family:'Orbitron'; font-size:16px; margin-bottom:15px">GLOBAL SYSTEM SETTINGS</h3>
+      <div class="field">
+        <label>SITE BRAND NAME</label>
+        <input id="setSiteName">
+      </div>
+      <div class="field">
+        <label>GLOBAL ANNOUNCEMENT MESSAGE</label>
+        <input id="setAnnouncement">
+      </div>
+      <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#aaa; margin-bottom:15px; cursor:pointer">
+        <input type="checkbox" id="setAnnounceActive" style="width:16px; height:16px"> Enable Announcement Bar
+      </label>
+      <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:#ff4444; margin-bottom:20px; cursor:pointer">
+        <input type="checkbox" id="setMaintenance" style="width:16px; height:16px"> ⚠️ Enable Maintenance Mode
+      </label>
+      <button onclick="saveSystemSettings()" class="btn-cyber-view">SAVE SETTINGS</button>
+    </div>
+
+    <!-- TAB 6: AUDIT LOGS -->
+    <div id="tab-logs" class="admin-tab cyber-card" style="text-align:left; display:none">
+      <h3 style="font-family:'Orbitron'; font-size:16px; margin-bottom:15px">SYSTEM AUDIT TRAIL</h3>
+      <div id="logsContent" style="font-family:monospace; font-size:11px; max-height:300px; overflow-y:auto"></div>
     </div>
 
   </div>
@@ -1349,6 +1681,11 @@ app.get("/admin", (req, res) => {
 `,
       `
 <script>
+function showTab(id){
+  document.querySelectorAll(".admin-tab").forEach(t => t.style.display = "none");
+  document.getElementById(id).style.display = "block";
+}
+
 document.getElementById("adBtn").onclick = async () => {
   const p = document.getElementById("adKey").value;
   try{
@@ -1373,21 +1710,49 @@ async function loadAdminStats(){
   const r = await fetch("/api/admin/all");
   const d = await r.json();
 
+  document.getElementById("statUsers").textContent = d.users.length;
+  document.getElementById("statSites").textContent = d.sites.length;
+
   document.getElementById("targetUserSelect").innerHTML = d.users.map(u => \`<option value="\${u.id}">\${u.username}</option>\`).join("");
   document.getElementById("adPostFolder").innerHTML = d.folders.map(f => \`<option value="\${f}">\${f}</option>\`).join("");
 
-  document.getElementById("adminDataList").innerHTML = \`
-    <h4 style="color:#ffffff; margin-bottom:10px">Users (\${d.users.length})</h4>
-    \${d.users.map(u => \`<div style="font-size:12px; color:#888; margin-bottom:4px">\${u.username} (ID: \${u.id})</div>\`).join("")}
-    
-    <h4 style="color:#ffffff; margin:18px 0 10px">Websites (\${d.sites.length})</h4>
-    \${d.sites.map(s => \`
-      <div style="padding:10px; border:1px solid rgba(255,255,255,0.1); border-radius:10px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center">
-        <div>\${s.title} (/site/\${s.slug}) - <i>\${s.authorName}</i></div>
-        <button onclick="adminDelSite('\${s.id}')" class="btn-nav">DEL</button>
+  // Populate Users
+  document.getElementById("usersListContent").innerHTML = d.users.map(u => \`
+    <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center">
+      <div>
+        <strong>\${u.username}</strong> \${u.banned ? '<span style="color:#ff4444">(BANNED)</span>' : ''}
+        <div style="font-size:10px; color:#777">ID: \${u.id}</div>
       </div>
-    \`).join("")}
-  \`;
+      <div style="display:flex; gap:4px">
+        <button onclick="toggleBan('\${u.id}')" class="btn-nav" style="padding:4px 8px; font-size:10px">\${u.banned ? 'UNBAN' : 'BAN'}</button>
+        <button onclick="adminDelUser('\${u.id}')" class="btn-nav" style="padding:4px 8px; font-size:10px; color:#ff4444">DEL</button>
+      </div>
+    </div>
+  \`).join("");
+
+  // Populate Sites
+  document.getElementById("sitesListContent").innerHTML = d.sites.map(s => \`
+    <div style="padding:10px; border:1px solid rgba(255,255,255,0.08); border-radius:10px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center">
+      <div>
+        <strong>\${s.title}</strong> (/site/\${s.slug})
+        <div style="font-size:10px; color:#777">Author: \${s.authorName} | Views: \${s.views || 0}</div>
+      </div>
+      <button onclick="adminDelSite('\${s.id}')" class="btn-nav" style="padding:4px 8px; font-size:10px; color:#ff4444">DEL</button>
+    </div>
+  \`).join("");
+
+  // Settings
+  if(d.settings){
+    document.getElementById("setSiteName").value = d.settings.siteName || "";
+    document.getElementById("setAnnouncement").value = d.settings.announcement || "";
+    document.getElementById("setAnnounceActive").checked = Boolean(d.settings.announcementActive);
+    document.getElementById("setMaintenance").checked = Boolean(d.settings.maintenanceMode);
+  }
+
+  // Logs
+  document.getElementById("logsContent").innerHTML = (d.logs || []).map(l => \`
+    <div style="margin-bottom:4px; color:#aaa">[\${new Date(l.timestamp).toLocaleTimeString()}] \${l.action}: \${l.details}</div>
+  \`).join("");
 }
 
 async function publishFolderPost(){
@@ -1402,7 +1767,7 @@ async function publishFolderPost(){
     headers:{ "Content-Type": "application/json" },
     body:JSON.stringify({ folder, title, bio, content })
   });
-  alert("Folder post published!");
+  alert("Post published successfully!");
   loadAdminStats();
 }
 
@@ -1417,8 +1782,20 @@ async function assignHtmlToUser(){
       html: document.getElementById("asHtml").value
     })
   });
-  alert("HTML assigned to user!");
+  alert("HTML assigned to user successfully!");
   loadAdminStats();
+}
+
+async function toggleBan(id){
+  await fetch("/api/admin/user/" + id + "/ban", { method:"POST" });
+  loadAdminStats();
+}
+
+async function adminDelUser(id){
+  if(confirm("Delete user and all their sites?")){
+    await fetch("/api/admin/user/" + id, { method:"DELETE" });
+    loadAdminStats();
+  }
 }
 
 async function adminDelSite(id){
@@ -1427,23 +1804,80 @@ async function adminDelSite(id){
     loadAdminStats();
   }
 }
+
+async function saveSystemSettings(){
+  await fetch("/api/admin/settings", {
+    method:"POST",
+    headers:{ "Content-Type": "application/json" },
+    body:JSON.stringify({
+      siteName: document.getElementById("setSiteName").value,
+      announcement: document.getElementById("setAnnouncement").value,
+      announcementActive: document.getElementById("setAnnounceActive").checked,
+      maintenanceMode: document.getElementById("setMaintenance").checked
+    })
+  });
+  alert("Settings Saved!");
+  loadAdminStats();
+}
 </script>
 `
     )
   );
 });
 
+/* ADMIN API ENDPOINTS */
 app.post("/api/admin/auth", (req, res) => {
   if (req.body.password !== ADMIN_PASS) return res.status(401).json({ ok: false });
-  const tok = genId(20);
+  const tok = genId(24);
   adminSessions.set(tok, true);
   res.cookie("sj_admin_token", tok, { httpOnly: true, path: "/" });
+  addLog("ADMIN_LOGIN", "Super Admin logged in");
   res.json({ ok: true });
 });
 
 app.get("/api/admin/all", requireAdmin, (req, res) => {
   const db = getDB();
-  res.json({ ok: true, users: db.users, sites: db.sites, folders: db.folders });
+  res.json({
+    ok: true,
+    users: db.users,
+    sites: db.sites,
+    folders: db.folders,
+    settings: db.settings,
+    logs: db.logs
+  });
+});
+
+app.post("/api/admin/settings", requireAdmin, (req, res) => {
+  const db = getDB();
+  db.settings = { ...db.settings, ...req.body };
+  saveDB(db);
+  addLog("SETTINGS_UPDATE", "System settings updated");
+  res.json({ ok: true });
+});
+
+app.get("/api/admin/backup-download", requireAdmin, (req, res) => {
+  const db = getDB();
+  res.setHeader("Content-Disposition", `attachment; filename="sjemar-backup-${Date.now()}.json"`);
+  res.type("json").send(JSON.stringify(db, null, 2));
+});
+
+app.post("/api/admin/user/:id/ban", requireAdmin, (req, res) => {
+  const db = getDB();
+  const user = db.users.find((u) => u.id === req.params.id);
+  if (!user) return res.status(404).json({ ok: false });
+  user.banned = !user.banned;
+  saveDB(db);
+  addLog("USER_BAN_TOGGLE", `User ${user.username} ban set to ${user.banned}`);
+  res.json({ ok: true, banned: user.banned });
+});
+
+app.delete("/api/admin/user/:id", requireAdmin, (req, res) => {
+  const db = getDB();
+  db.users = db.users.filter((u) => u.id !== req.params.id);
+  db.sites = db.sites.filter((s) => s.userId !== req.params.id);
+  saveDB(db);
+  addLog("USER_DELETE", `User ID ${req.params.id} deleted`);
+  res.json({ ok: true });
 });
 
 app.post("/api/admin/folder-post", requireAdmin, (req, res) => {
@@ -1463,10 +1897,14 @@ app.post("/api/admin/folder-post", requireAdmin, (req, res) => {
     content: content || "",
     author: "Admin",
     views: 0,
+    likes: 0,
+    pinned: false,
+    comments: [],
     createdAt: new Date().toISOString()
   });
 
   saveDB(db);
+  addLog("ADMIN_POST_CREATE", `Post created: ${title}`);
   res.json({ ok: true });
 });
 
@@ -1482,32 +1920,43 @@ app.post("/api/admin/assign", requireAdmin, (req, res) => {
     id: genId(),
     userId: user.id,
     authorName: user.username,
-    title: title || "Assigned App",
+    title: title || "Assigned Website",
     slug,
-    bio: "Assigned by Admin",
+    bio: "Assigned by Administrator",
     html: html || "<h1>Site Assigned by Admin</h1>",
+    rawHtml: html,
     published: true,
     views: 0,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   });
+
   saveDB(db);
+  addLog("ADMIN_SITE_ASSIGN", `Assigned site ${title} to ${user.username}`);
   res.json({ ok: true });
 });
 
 /* =========================================================
-   START SERVER
+   404 NOT FOUND & SERVER BOOTSTRAP
 ========================================================= */
 
 app.use((req, res) => {
   res.status(404).send(
     page(
       "404",
-      `<div class="container" style="text-align:center; padding:80px 0"><h1 style="font-family:'Orbitron'">404 NOT FOUND</h1><a href="/" class="btn-cyber-view" style="display:inline-flex; width:auto; margin-top:20px">RETURN HOME</a></div>`
+      `<div class="container" style="text-align:center; padding:80px 0">
+        <h1 style="font-family:'Orbitron'; font-size:32px">404 NOT FOUND</h1>
+        <p style="color:#777; margin:10px 0 20px">The requested page or hosted site does not exist.</p>
+        <a href="/" class="btn-cyber-view" style="display:inline-flex; width:auto">RETURN HOME</a>
+      </div>`
     )
   );
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`SJEMAR Engine Running on port ${PORT}`);
+  console.log(`=================================================`);
+  console.log(`🚀 SJEMAR Next-Gen OLED Engine Online!`);
+  console.log(`📡 Port: ${PORT}`);
+  console.log(`🛡️ Admin Access Pass: ${ADMIN_PASS}`);
+  console.log(`=================================================`);
 });
