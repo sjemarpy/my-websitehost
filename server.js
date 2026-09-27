@@ -1,7 +1,8 @@
 /**
  * ============================================================================
- * SJEMAR NEXT-GEN OLED ENGINE (FIREBASE & iOS GLASS EDITION)
- * Complete Single-File Node.js Backend & Cyber OLED Frontend
+ * SJEMAR NEXT-GEN OLED ENGINE v3.0 (AI + FIREBASE EDITION)
+ * Complete Node.js Backend with OpenRouter AI Integration
+ * iOS OLED Dark Glass Blur UI + 3D SVG Elements
  * ============================================================================
  */
 
@@ -9,32 +10,36 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const https = require("https");
 
 const app = express();
 
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_PASS = process.env.ADMIN_PASS || "py.py.php";
-const ADMIN_PIN = "5768"; // Admin Unlock PIN
-const SPECIAL_VIP_ID = "899987"; // Special VIP User ID
+const ADMIN_PIN = "5768";
+const SPECIAL_VIP_ID = "899987";
+
+// OpenRouter Free API
+const OPENROUTER_API_KEY = "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";
+const AI_MODEL = "deepseek/deepseek-chat-v3-0324:free";
 
 const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "database.json");
 
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
-
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 /* =========================================================
-   DATABASE INITIALIZATION & MANAGEMENT (JSON ENGINE)
+   DATABASE ENGINE
 ========================================================= */
 
 const initialDB = {
   settings: {
     siteName: "SJEMAR OLED",
     maintenanceMode: false,
-    announcement: "⚡ Welcome to SJEMAR Next-Gen Engine. Secure HTML Hosting Active.",
+    announcement: "⚡ Welcome to SJEMAR Next-Gen AI Engine. Free AI HTML Generator Active!",
     announcementActive: true,
     globalHeaderCode: "",
     globalFooterCode: "",
@@ -47,10 +52,10 @@ const initialDB = {
     {
       id: "p1",
       folder: "Updates",
-      title: "SJEMAR Next-Gen OLED Engine Released",
-      slug: "sjemar-engine-v2",
-      bio: "Official release notes of the secure Firebase-integrated HTML platform.",
-      content: "Welcome to SJEMAR. Build, host, and protect your projects with real-time Firebase Auth and OLED Glass UI.",
+      title: "SJEMAR v3.0 - AI HTML Generator Released",
+      slug: "sjemar-v3-ai-release",
+      bio: "Free AI-powered website generator with OpenRouter integration.",
+      content: "Welcome to SJEMAR v3.0! Now you can generate complete websites using AI. Just describe your project and get full HTML/CSS/JS code instantly.",
       author: "Admin",
       views: 0,
       likes: 0,
@@ -60,13 +65,13 @@ const initialDB = {
     }
   ],
   versions: [
-    { id: "v1", title: "Version 1.0", subtitle: "TikTok & Facebook Video Engine", link: "#" },
-    { id: "v9", title: "Version 6.0", subtitle: "OLED Anti-Theft & Firebase Protection", link: "#" }
+    { id: "v1", title: "Version 3.0", subtitle: "AI HTML Generator + Firebase Auth", link: "#" },
+    { id: "v2", title: "Version 2.0", subtitle: "OLED Anti-Theft Engine", link: "#" }
   ],
   resources: [
-    { id: "r1", section: "RESOURCE", ribbon: "FREE", badge: "100% Free", title: "Free Website", icon: "triangle", slug: "create" },
-    { id: "r2", section: "APK", ribbon: "APK", badge: "Android Build", title: "APK Builder", icon: "valorant", slug: "create" },
-    { id: "r3", section: "REVIEW", ribbon: "REV", badge: "Community", title: "Review Project", icon: "spinner", slug: "posts" }
+    { id: "r1", section: "AI", ribbon: "FREE", badge: "AI Generator", title: "AI Website Maker", icon: "ai", slug: "create" },
+    { id: "r2", section: "RESOURCE", ribbon: "FREE", badge: "100% Free", title: "Free Website", icon: "triangle", slug: "create" },
+    { id: "r3", section: "APK", ribbon: "APK", badge: "Android Build", title: "APK Builder", icon: "valorant", slug: "create" }
   ],
   logs: []
 };
@@ -117,7 +122,7 @@ function addLog(action, details = "") {
 initDB();
 
 /* =========================================================
-   SECURITY, HASHING & SESSIONS
+   SECURITY & SESSIONS
 ========================================================= */
 
 function genId(len = 10) { return crypto.randomBytes(len).toString("hex"); }
@@ -206,7 +211,7 @@ function page(title, content, script = "", req = { path: "" }) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>${escapeHTML(title)} | SJEMAR OLED</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg: #000000; --glass: rgba(28, 28, 30, 0.65); --glass-heavy: rgba(15, 15, 15, 0.85);
@@ -218,12 +223,13 @@ function page(title, content, script = "", req = { path: "" }) {
     body { background: var(--bg); color: var(--text); font-family: 'Inter', -apple-system, sans-serif; min-height: 100vh; overflow-x: hidden; -webkit-font-smoothing: antialiased; }
     body::before {
       content: ''; position: fixed; top: -50%; left: -50%; width: 200%; height: 200%;
-      background: radial-gradient(circle at 15% 15%, rgba(10, 132, 255, 0.15), transparent 40%), radial-gradient(circle at 85% 85%, rgba(255, 55, 95, 0.08), transparent 40%);
+      background: radial-gradient(circle at 15% 15%, rgba(10, 132, 255, 0.15), transparent 40%), radial-gradient(circle at 85% 85%, rgba(255, 55, 95, 0.08), transparent 40%), radial-gradient(circle at 50% 50%, rgba(94, 92, 230, 0.1), transparent 50%);
       z-index: -1; animation: ambient 25s infinite alternate ease-in-out;
     }
     @keyframes ambient { 0% { transform: translate(0, 0) rotate(0deg); } 100% { transform: translate(-5%, -5%) rotate(15deg); } }
-    .ambient-3d { position: fixed; z-index: -1; opacity: 0.15; filter: blur(8px); animation: float3d 20s infinite alternate ease-in-out; }
+    .ambient-3d { position: fixed; z-index: -1; opacity: 0.15; filter: blur(8px); animation: float3d 20s infinite alternate ease-in-out; pointer-events: none; }
     .ambient-3d.tl { top: 10%; left: 10%; } .ambient-3d.br { bottom: 10%; right: 10%; animation-delay: -10s; }
+    .ambient-3d.center { top: 50%; left: 50%; transform: translate(-50%, -50%); animation-delay: -5s; opacity: 0.08; }
     @keyframes float3d { 0% { transform: translateZ(0) rotateX(0) rotateY(0); } 100% { transform: translateZ(50px) rotateX(20deg) rotateY(20deg); } }
     .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
     .nav-bar { position: sticky; top: 0; z-index: 100; background: var(--glass-heavy); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); border-bottom: 1px solid var(--glass-border); padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; }
@@ -233,34 +239,51 @@ function page(title, content, script = "", req = { path: "" }) {
     .nav-links a { color: var(--text-secondary); text-decoration: none; font-weight: 500; font-size: 15px; transition: color 0.2s; }
     .nav-links a:hover, .nav-links a.active { color: var(--text); }
     .glass { background: var(--glass); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); border: 1px solid var(--glass-border); border-radius: 24px; padding: 28px; box-shadow: 0 12px 40px rgba(0,0,0,0.6); margin-bottom: 24px; }
-    .glass-input { width: 100%; padding: 16px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; color: var(--text); font-size: 16px; outline: none; transition: all 0.3s; }
+    .glass-input { width: 100%; padding: 16px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; color: var(--text); font-size: 16px; outline: none; transition: all 0.3s; font-family: inherit; }
     .glass-input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-glow); background: rgba(255,255,255,0.08); }
-    .btn { padding: 14px 28px; border: none; border-radius: 14px; font-weight: 600; font-size: 16px; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+    textarea.glass-input { resize: vertical; min-height: 100px; }
+    .btn { padding: 14px 28px; border: none; border-radius: 14px; font-weight: 600; font-size: 16px; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none; }
     .btn:active { transform: scale(0.96); }
     .btn-primary { background: var(--accent); color: white; box-shadow: 0 6px 20px var(--accent-glow); }
     .btn-glass { background: rgba(255,255,255,0.1); color: var(--text); border: 1px solid var(--glass-border); }
+    .btn-ai { background: linear-gradient(135deg, #bf5af2, #0a84ff); color: white; box-shadow: 0 6px 20px rgba(191, 90, 242, 0.4); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .grid { display: grid; gap: 20px; } .grid-3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); } .grid-2 { grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); }
     h1 { font-size: 36px; font-weight: 800; letter-spacing: -1px; margin-bottom: 12px; } h2 { font-size: 28px; font-weight: 700; margin-bottom: 16px; } h3 { font-size: 20px; font-weight: 600; margin-bottom: 12px; }
     p { color: var(--text-secondary); line-height: 1.6; font-size: 15px; }
     .badge { display: inline-block; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; background: rgba(10, 132, 255, 0.15); color: var(--accent); border: 1px solid rgba(10, 132, 255, 0.3); }
+    .badge-vip { background: rgba(255, 215, 0, 0.2); color: gold; border: 1px solid gold; }
     .profile-pic { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; border: 2px solid var(--glass-border); box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
     .announce { background: linear-gradient(90deg, rgba(10,132,255,0.1), rgba(255,55,95,0.1)); border: 1px solid var(--glass-border); padding: 12px; text-align: center; border-radius: 16px; margin-bottom: 24px; font-size: 14px; font-weight: 500; }
     ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
+    .ai-glow { position: relative; overflow: hidden; }
+    .ai-glow::before {
+      content: ''; position: absolute; top: -2px; left: -2px; right: -2px; bottom: -2px;
+      background: linear-gradient(45deg, #ff006e, #8338ec, #3a86ff, #ff006e);
+      background-size: 400%; border-radius: 26px; z-index: -1; animation: glow 3s linear infinite; opacity: 0.5;
+    }
+    @keyframes glow { 0% { background-position: 0% 0%; } 100% { background-position: 400% 0%; } }
+    .typing-indicator { display: inline-flex; gap: 4px; align-items: center; padding: 8px 16px; }
+    .typing-indicator span { width: 8px; height: 8px; background: var(--accent); border-radius: 50%; animation: typing 1.4s infinite; }
+    .typing-indicator span:nth-child(2) { animation-delay: 0.2s; } .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes typing { 0%, 60%, 100% { opacity: 0.3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-6px); } }
+    .preview-frame { width: 100%; height: 500px; border: 1px solid var(--glass-border); border-radius: 14px; background: white; }
     @media (max-width: 768px) { .nav-links { display: none; } h1 { font-size: 28px; } .glass { padding: 20px; border-radius: 20px; } }
   </style>
 </head>
 <body>
   <svg class="ambient-3d tl" width="200" height="200" viewBox="0 0 200 200"><defs><linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#0a84ff;stop-opacity:1" /><stop offset="100%" style="stop-color:#5e5ce6;stop-opacity:1" /></linearGradient></defs><path d="M100,10 L190,100 L100,190 L10,100 Z" fill="url(#grad1)" /></svg>
-  <svg class="ambient-3d br" width="250" height="250" viewBox="0 0 200 200"><circle cx="100" cy="100" r="80" fill="none" stroke="#ff453a" stroke-width="2" opacity="0.5"/><circle cx="100" cy="100" r="50" fill="none" stroke="#32d74b" stroke-width="1" opacity="0.5"/></svg>
+  <svg class="ambient-3d br" width="250" height="250" viewBox="0 0 200 200"><circle cx="100" cy="100" r="80" fill="none" stroke="#ff453a" stroke-width="2" opacity="0.5"/><circle cx="100" cy="100" r="50" fill="none" stroke="#32d74b" stroke-width="1" opacity="0.5"/><circle cx="100" cy="100" r="30" fill="none" stroke="#bf5af2" stroke-width="1" opacity="0.5"/></svg>
+  <svg class="ambient-3d center" width="400" height="400" viewBox="0 0 200 200"><path d="M100,10 L190,100 L100,190 L10,100 Z" fill="none" stroke="#0a84ff" stroke-width="1"/><path d="M100,30 L170,100 L100,170 L30,100 Z" fill="none" stroke="#5e5ce6" stroke-width="1"/><path d="M100,50 L150,100 L100,150 L50,100 Z" fill="none" stroke="#bf5af2" stroke-width="1"/></svg>
 
   <nav class="nav-bar">
     <div class="logo">
-      <div class="logo-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon></svg></div>
-      SJEMAR <span style="color: var(--accent)">OLED</span>
+      <div class="logo-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg></div>
+      SJEMAR <span style="color: var(--accent)">AI</span>
     </div>
     <div class="nav-links">
       <a href="/" class="${req.path === '/' ? 'active' : ''}">Home</a>
-      <a href="/create" class="${req.path === '/create' ? 'active' : ''}">Publish</a>
+      <a href="/create" class="${req.path === '/create' ? 'active' : ''}">AI Maker</a>
       <a href="/posts" class="${req.path === '/posts' ? 'active' : ''}">Posts</a>
       <a href="/dashboard" class="${req.path === '/dashboard' ? 'active' : ''}">Vault</a>
       <a href="/admin" class="${req.path === '/admin' ? 'active' : ''}">Admin</a>
@@ -294,7 +317,7 @@ function page(title, content, script = "", req = { path: "" }) {
         const token = await user.getIdToken();
         fetch('/api/auth/firebase-login', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uid: user.uid, email: user.email, displayName: user.displayName || user.email.split('@')[0], photoURL: user.photoURL || 'https://ui-avatars.com/api/?background=0a84ff&color=fff&name=' + (user.displayName || user.email), token: token })
+          body: JSON.stringify({ uid: user.uid, email: user.email, displayName: user.displayName || user.email.split('@')[0], photoURL: user.photoURL || 'https://ui-avatars.com/api/?background=0a84ff&color=fff&name=' + encodeURIComponent(user.displayName || user.email), token: token })
         }).then(r => r.json()).then(data => { if(data.ok && window.location.pathname === '/create') location.reload(); });
       }
     });
@@ -307,18 +330,90 @@ function page(title, content, script = "", req = { path: "" }) {
 }
 
 /* =========================================================
-   ROUTES & CONTROLLERS
+   OPENROUTER AI API INTEGRATION
+========================================================= */
+
+function callOpenRouterAI(prompt) {
+  return new Promise((resolve, reject) => {
+    const systemPrompt = `You are SJEMAR AI, an expert web developer. Generate complete, production-ready HTML code with embedded CSS and JavaScript. 
+Rules:
+- Return ONLY the HTML code (no markdown, no explanations)
+- Start with <!DOCTYPE html>
+- Include all CSS in <style> tags
+- Include all JS in <script> tags  
+- Make it beautiful, modern, responsive
+- Use dark theme by default
+- Include proper meta tags and title
+The user's request: ${prompt}`;
+
+    const postData = JSON.stringify({
+      model: AI_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: prompt }
+      ],
+      temperature: 0.7,
+      max_tokens: 4000
+    });
+
+    const options = {
+      hostname: "openrouter.ai",
+      port: 443,
+      path: "/api/v1/chat/completions",
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://sjemar.app",
+        "X-Title": "SJEMAR OLED AI"
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.choices && parsed.choices[0]) {
+            let html = parsed.choices[0].message.content;
+            // Clean up markdown code blocks if present
+            html = html.replace(/```html\s*/g, "").replace(/```\s*/g, "").trim();
+            resolve(html);
+          } else {
+            reject(new Error(parsed.error?.message || "AI response error"));
+          }
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on("error", reject);
+    req.write(postData);
+    req.end();
+  });
+}
+
+/* =========================================================
+   ROUTES
 ========================================================= */
 
 app.get("/", (req, res) => {
   const db = getDB();
   res.send(page("Home", `
-    <h1>Next-Gen HTML Hosting</h1>
-    <p style="margin-bottom:30px;">Secure, isolated, and protected by Firebase & Anti-Theft Engine.</p>
-    <div class="grid grid-3">
+    <h1>🤖 Next-Gen AI Website Builder</h1>
+    <p style="margin-bottom:30px; font-size: 18px;">Describe your dream website. Our AI will build it in seconds.</p>
+    <div class="glass ai-glow" style="text-align:center;">
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="url(#aiGrad)" stroke-width="1.5" style="margin-bottom:20px;">
+        <defs><linearGradient id="aiGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#bf5af2"/><stop offset="100%" style="stop-color:#0a84ff"/></linearGradient></defs>
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+      </svg>
+      <h2 style="background:linear-gradient(135deg,#bf5af2,#0a84ff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;">Free AI Generator</h2>
+      <p style="margin-bottom:24px;">Powered by DeepSeek AI via OpenRouter. 100% Free for all users.</p>
+      <a href="/create" class="btn btn-ai" style="font-size:18px;">✨ Generate Website Now</a>
+    </div>
+    <div class="grid grid-3" style="margin-top:30px;">
       ${(db.resources || []).map(r => `
         <div class="glass" style="text-align:center; transition:transform 0.3s;" onmouseover="this.style.transform='translateY(-5px)'" onmouseout="this.style.transform='translateY(0)'">
-          <span class="badge">${escapeHTML(r.ribbon)}</span>
+          <span class="badge ${r.ribbon === 'FREE' ? '' : ''}">${escapeHTML(r.ribbon)}</span>
           <h3 style="margin-top:16px;">${escapeHTML(r.title)}</h3>
           <p>${escapeHTML(r.badge)}</p>
           <a href="/${encodeURIComponent(r.slug)}" class="btn btn-primary" style="margin-top:20px; width:100%;">EXPLORE</a>
@@ -334,41 +429,67 @@ app.get("/create", (req, res) => {
     <div class="glass" style="text-align:center;">
       <img src="${user.photoURL}" class="profile-pic" style="width:80px;height:80px;margin-bottom:16px;">
       <h3>Welcome, ${escapeHTML(user.username)}</h3>
-      <p style="margin-bottom:20px;">You are authenticated via Firebase. Ready to publish.</p>
+      <p style="margin-bottom:20px;">You are authenticated. Ready to create amazing websites with AI.</p>
     </div>` : `
     <div class="glass" style="text-align:center;">
       <h2>🔒 Authentication Required</h2>
-      <p style="margin-bottom:24px;">Login via Firebase to claim project ownership.</p>
+      <p style="margin-bottom:24px;">Login via Firebase (100% Free) to use AI Generator.</p>
       <button id="googleLoginBtn" class="btn btn-primary" style="width:100%;margin-bottom:12px;">Continue with Google</button>
       <div id="emailAuthForm" style="display:none; text-align:left; margin-top:20px;">
         <input type="email" id="fbEmail" class="glass-input" placeholder="Email" style="margin-bottom:12px;">
         <input type="password" id="fbPass" class="glass-input" placeholder="Password" style="margin-bottom:12px;">
-        <button id="emailLoginBtn" class="btn btn-primary" style="width:100%;">Login / Register</button>
+        <button id="emailLoginBtn" class="btn btn-primary" style="width:100%;">Login / Register Free</button>
       </div>
       <p style="margin-top:16px; font-size:13px; cursor:pointer; color:var(--accent);" onclick="document.getElementById('emailAuthForm').style.display='block'">Or use Email & Password</p>
     </div>`;
 
-  const pubUI = user ? `
+  const aiUI = user ? `
+    <div class="glass ai-glow">
+      <h2>🤖 AI Website Generator</h2>
+      <p style="margin-bottom:20px;">Describe your website and let AI build it for you. Examples: "portfolio site for photographer", "landing page for coffee shop", "todo app with dark theme"</p>
+      <textarea id="aiPrompt" class="glass-input" rows="4" placeholder="Describe your dream website..." style="margin-bottom:16px;"></textarea>
+      <button id="generateAiBtn" class="btn btn-ai" style="width:100%; margin-bottom:20px;">✨ Generate with AI</button>
+      <div id="aiLoading" style="display:none; text-align:center; padding:20px;">
+        <div class="typing-indicator"><span></span><span></span><span></span></div>
+        <p style="margin-top:12px;">AI is building your website...</p>
+      </div>
+      <div id="aiResult" style="display:none;">
+        <h3 style="color:var(--success); margin-bottom:12px;">✅ Website Generated!</h3>
+        <div style="display:flex; gap:10px; margin-bottom:16px;">
+          <button class="btn btn-primary" onclick="document.getElementById('htmlEditor').value = window._aiHtml; document.getElementById('htmlEditor').style.height = '500px';">📝 Load to Editor</button>
+          <button class="btn btn-glass" onclick="downloadAiHtml()">💾 Download HTML</button>
+          <button class="btn btn-glass" onclick="previewAiHtml()">👁️ Preview</button>
+        </div>
+        <textarea id="aiHtmlPreview" class="glass-input" rows="10" readonly style="font-family:monospace; font-size:12px;"></textarea>
+      </div>
+    </div>
+
     <div class="glass">
-      <h2>Publish HTML to Link</h2>
+      <h2>📝 Manual HTML Publisher</h2>
       <form id="publishForm">
         <div class="grid grid-2" style="margin-bottom:16px;">
           <input type="text" name="title" class="glass-input" placeholder="Project Title *" required>
           <input type="text" name="slug" class="glass-input" placeholder="Unique Slug *" required>
         </div>
-        <textarea name="html" class="glass-input" rows="10" placeholder="HTML Code *" required style="font-family:monospace; margin-bottom:16px;"></textarea>
+        <input type="text" name="bio" class="glass-input" placeholder="Bio / Description (optional)" style="margin-bottom:16px;">
+        <textarea name="html" id="htmlEditor" class="glass-input" rows="15" placeholder="Paste HTML here (or use AI generator above) *" required style="font-family:monospace; font-size:13px; margin-bottom:16px;"></textarea>
         <label style="display:flex; align-items:center; gap:10px; margin-bottom:24px; cursor:pointer;">
           <input type="checkbox" name="antiTheft" checked style="width:20px; height:20px;"> Enable Anti-Theft Protection
         </label>
-        <button type="submit" class="btn btn-primary" style="width:100%;">Publish & Generate Link</button>
+        <button type="submit" class="btn btn-primary" style="width:100%;">🚀 Publish Website</button>
       </form>
       <div id="publishResult" style="display:none; margin-top:20px; padding:20px; background:rgba(50,215,75,0.1); border:1px solid rgba(50,215,75,0.3); border-radius:16px; text-align:center;">
-        <h3 style="color:var(--success);">Website Published!</h3>
-        <a id="siteLink" href="#" target="_blank" class="btn btn-glass" style="margin-top:12px;">Visit Site</a>
+        <h3 style="color:var(--success);">🎉 Website Published!</h3>
+        <p style="margin:12px 0; word-break:break-all;" id="publishedUrl"></p>
+        <div style="display:flex; gap:10px; justify-content:center;">
+          <a id="siteLink" href="#" target="_blank" class="btn btn-primary">Visit Site</a>
+          <button class="btn btn-glass" onclick="copyLink()">📋 Copy Link</button>
+        </div>
       </div>
-    </div>` : '';
+    </div>
+  ` : '';
 
-  res.send(page("Publish", authUI + pubUI, `
+  res.send(page("AI Website Maker", authUI + aiUI, `
     <script>
       const googleBtn = document.getElementById('googleLoginBtn');
       if(googleBtn) googleBtn.onclick = () => firebaseAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
@@ -377,16 +498,83 @@ app.get("/create", (req, res) => {
         const email = document.getElementById('fbEmail').value, pass = document.getElementById('fbPass').value;
         try { await firebaseAuth.signInWithEmailAndPassword(email, pass); } catch(e) { try { await firebaseAuth.createUserWithEmailAndPassword(email, pass); } catch(err) { alert(err.message); } }
       };
+
+      const generateAiBtn = document.getElementById('generateAiBtn');
+      if(generateAiBtn) generateAiBtn.onclick = async () => {
+        const prompt = document.getElementById('aiPrompt').value.trim();
+        if(!prompt) return alert('Please describe your website');
+        document.getElementById('aiLoading').style.display = 'block';
+        document.getElementById('aiResult').style.display = 'none';
+        generateAiBtn.disabled = true;
+        try {
+          const res = await fetch('/api/ai/generate', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ prompt })
+          });
+          const data = await res.json();
+          if(data.ok) {
+            window._aiHtml = data.html;
+            document.getElementById('aiHtmlPreview').value = data.html;
+            document.getElementById('aiResult').style.display = 'block';
+          } else {
+            alert('AI Error: ' + data.error);
+          }
+        } catch(e) { alert('Error: ' + e.message); }
+        document.getElementById('aiLoading').style.display = 'none';
+        generateAiBtn.disabled = false;
+      };
+
+      window.downloadAiHtml = () => {
+        const blob = new Blob([window._aiHtml], {type: 'text/html'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'ai-website.html'; a.click();
+      };
+
+      window.previewAiHtml = () => {
+        const win = window.open();
+        win.document.write(window._aiHtml);
+        win.document.close();
+      };
+
+      window.copyLink = () => {
+        const url = document.getElementById('publishedUrl').textContent;
+        navigator.clipboard.writeText(url).then(() => alert('Link copied!'));
+      };
+
       const form = document.getElementById('publishForm');
       if(form) form.onsubmit = async (e) => {
         e.preventDefault();
-        const fd = new FormData(form), data = Object.fromEntries(fd.entries()); data.antiTheft = fd.has('antiTheft');
+        const fd = new FormData(form), data = Object.fromEntries(fd.entries()); 
+        data.antiTheft = fd.has('antiTheft');
         const res = await fetch('/api/publish', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
         const json = await res.json();
-        if(json.ok) { document.getElementById('siteLink').href = json.site.url; document.getElementById('publishResult').style.display = 'block'; form.reset(); } else alert(json.error);
+        if(json.ok) { 
+          document.getElementById('siteLink').href = json.site.url; 
+          document.getElementById('publishedUrl').textContent = json.site.url;
+          document.getElementById('publishResult').style.display = 'block'; 
+          form.reset(); 
+        } else alert(json.error);
       };
     </script>
   `, req));
+});
+
+// AI Generation endpoint
+app.post("/api/ai/generate", requireUser, async (req, res) => {
+  const { prompt } = req.body;
+  if (!prompt || prompt.length < 5) return res.status(400).json({ ok: false, error: "Prompt too short" });
+  
+  addLog("AI_GENERATE", `User ${req.user.username}: ${prompt.slice(0, 50)}`);
+  
+  try {
+    const html = await callOpenRouterAI(prompt);
+    if (!html || html.length < 50) throw new Error("Empty AI response");
+    res.json({ ok: true, html, model: AI_MODEL });
+  } catch (err) {
+    console.error("AI Error:", err);
+    res.status(500).json({ ok: false, error: err.message || "AI generation failed" });
+  }
 });
 
 app.post("/api/auth/firebase-login", (req, res) => {
@@ -417,7 +605,9 @@ app.post("/api/publish", requireUser, (req, res) => {
   let fullHtml = html; if (antiTheft) fullHtml += "\n" + ANTI_THEFT_SCRIPT;
   const site = { id: genId(), userId: req.user.id, authorName: req.user.username, title, slug, bio: bio || "", html: fullHtml, published: true, views: 0, createdAt: new Date().toISOString() };
   db.sites.unshift(site); saveDB(db); addLog("SITE_PUBLISH", `Site published: ${title}`);
-  res.json({ ok: true, site: { url: `/site/${site.slug}` } });
+  const proto = req.headers["x-forwarded-proto"] || req.protocol;
+  const host = req.get("host");
+  res.json({ ok: true, site: { url: `${proto}://${host}/site/${site.slug}` } });
 });
 
 app.get("/site/:slug", (req, res) => {
@@ -428,19 +618,19 @@ app.get("/site/:slug", (req, res) => {
 
 app.get("/dashboard", requireUser, (req, res) => {
   const db = getDB(); const mySites = db.sites.filter((s) => s.userId === req.user.id);
-  res.send(page("Vault", `
-    <h1>My Project Vault</h1>
+  res.send(page("My Vault", `
+    <h1>📦 My Project Vault</h1>
     <div class="grid grid-2">
       ${mySites.map(s => `
         <div class="glass">
           <h3>${escapeHTML(s.title)}</h3>
-          <p>/${escapeHTML(s.slug)} • ${s.views} Views</p>
+          <p style="font-size:13px; margin:8px 0;">/${escapeHTML(s.slug)} • 👁️ ${s.views} Views</p>
           <div style="display:flex; gap:10px; margin-top:16px;">
             <a href="/site/${s.slug}" target="_blank" class="btn btn-primary" style="flex:1;">Visit</a>
-            <button class="btn btn-glass" style="color:var(--danger);" onclick="deleteSite('${s.id}')">Delete</button>
+            <button class="btn btn-glass" style="color:var(--danger);" onclick="deleteSite('${s.id}')">🗑️</button>
           </div>
         </div>
-      `).join("") || '<p>No sites published yet.</p>'}
+      `).join("") || '<div class="glass"><p>No sites yet. <a href="/create" style="color:var(--accent)">Create one with AI!</a></p></div>'}
     </div>
   `, `<script>
     async function deleteSite(id) { if(confirm('Delete?')) { await fetch('/api/sites/'+id, {method:'DELETE'}); location.reload(); } }
@@ -454,14 +644,14 @@ app.delete("/api/sites/:id", requireUser, (req, res) => {
 app.get("/posts", (req, res) => {
   const db = getDB();
   res.send(page("Posts", `
-    <h1>System Posts & Guides</h1>
+    <h1>📰 System Posts & Guides</h1>
     <div class="grid grid-2">
       ${db.posts.map(p => `
         <div class="glass">
           <span class="badge">${escapeHTML(p.folder)}</span>
           <h3 style="margin-top:12px;">${escapeHTML(p.title)}</h3>
           <p>${escapeHTML(p.bio || p.content.slice(0, 100))}</p>
-          <p style="margin-top:12px; font-size:12px;">❤️ ${p.likes} Views: ${p.views}</p>
+          <p style="margin-top:12px; font-size:12px;">❤️ ${p.likes} | 👁️ ${p.views}</p>
         </div>
       `).join("")}
     </div>
@@ -472,15 +662,15 @@ app.get("/admin", (req, res) => {
   res.send(page("Admin Control", `
     <div class="glass" style="text-align:center;" id="adminLock">
       <h1>🔒 Admin Master Suite</h1>
-      <p style="margin-bottom:24px;">Enter Security PIN to access system controls.</p>
-      <input type="password" id="adminPin" class="glass-input" placeholder="Enter PIN (5768)" style="max-width:300px; margin:0 auto 16px; text-align:center;">
-      <button class="btn btn-primary" onclick="unlockAdmin()">Unlock System</button>
+      <p style="margin-bottom:24px;">Enter Security PIN (5768) to access system controls.</p>
+      <input type="password" id="adminPin" class="glass-input" placeholder="Enter PIN" style="max-width:300px; margin:0 auto 16px; text-align:center;">
+      <button class="btn btn-primary" onclick="unlockAdmin()">🔓 Unlock System</button>
     </div>
     <div id="adminPanel" style="display:none;">
       <div class="grid grid-3" style="margin-bottom:24px;">
-        <div class="glass" style="text-align:center;"><h3 id="statUsers">0</h3><p>Total Users</p></div>
-        <div class="glass" style="text-align:center;"><h3 id="statSites">0</h3><p>Total Websites</p></div>
-        <div class="glass" style="text-align:center;"><h3 id="statPosts">0</h3><p>Total Posts</p></div>
+        <div class="glass" style="text-align:center;"><h3 id="statUsers">0</h3><p>Users</p></div>
+        <div class="glass" style="text-align:center;"><h3 id="statSites">0</h3><p>Websites</p></div>
+        <div class="glass" style="text-align:center;"><h3 id="statAi">0</h3><p>AI Generations</p></div>
       </div>
       <div class="glass">
         <h2>⚙️ 5768 Edit Info & System Settings</h2>
@@ -489,8 +679,8 @@ app.get("/admin", (req, res) => {
         <label style="display:flex; align-items:center; gap:10px; margin-bottom:20px; cursor:pointer;">
           <input type="checkbox" id="setMaintenance" style="width:20px; height:20px;"> ⚠️ Enable Maintenance Mode
         </label>
-        <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
-        <a href="/api/admin/backup-download" class="btn btn-glass" style="margin-left:12px;">Download JSON Backup</a>
+        <button class="btn btn-primary" onclick="saveSettings()">💾 Save Settings</button>
+        <a href="/api/admin/backup-download" class="btn btn-glass" style="margin-left:12px;">📥 Download Backup</a>
       </div>
       <div class="glass">
         <h2>👥 User Management (899987 VIP System)</h2>
@@ -507,16 +697,18 @@ app.get("/admin", (req, res) => {
       async function loadAdminData() {
         const data = await (await fetch('/api/admin/all')).json();
         if(data.ok) {
+          const aiLogs = data.logs.filter(l => l.action === 'AI_GENERATE').length;
           document.getElementById('statUsers').innerText = data.users.length;
           document.getElementById('statSites').innerText = data.sites.length;
+          document.getElementById('statAi').innerText = aiLogs;
           document.getElementById('setSiteName').value = data.settings.siteName;
           document.getElementById('setAnnouncement').value = data.settings.announcement;
           document.getElementById('setMaintenance').checked = data.settings.maintenanceMode;
           document.getElementById('userList').innerHTML = data.users.map(u => \`
             <div class="glass" style="padding:16px; display:flex; justify-content:space-between; align-items:center;">
               <div style="display:flex; align-items:center; gap:12px;">
-                <img src="\${u.photoURL || 'https://ui-avatars.com/api/?name='+u.username}" class="profile-pic" style="width:40px;height:40px;">
-                <div><strong>\${u.username}</strong> \${u.id === '899987' || u.firebaseUid === '899987' ? '<span class="badge" style="background:rgba(255,215,0,0.2);color:gold;border-color:gold;margin-left:8px;">VIP 899987</span>' : ''}<p style="font-size:12px;">\${u.email || 'User'}</p></div>
+                <img src="\${u.photoURL || 'https://ui-avatars.com/api/?name='+encodeURIComponent(u.username)}" class="profile-pic" style="width:40px;height:40px;">
+                <div><strong>\${u.username}</strong> \${u.id === '899987' || u.firebaseUid === '899987' ? '<span class="badge badge-vip" style="margin-left:8px;">👑 VIP 899987</span>' : ''}<p style="font-size:12px;">\${u.email || 'User'}</p></div>
               </div>
               <button class="btn btn-glass" style="padding:8px 12px; font-size:12px;" onclick="toggleBan('\${u.id}')">\${u.banned ? 'Unban' : 'Ban'}</button>
             </div>\`).join('');
@@ -537,7 +729,7 @@ app.post("/api/admin/auth", (req, res) => {
   res.cookie("sj_admin_token", tok, { httpOnly: true, path: "/" }); res.json({ ok: true });
 });
 
-app.get("/api/admin/all", requireAdmin, (req, res) => { const db = getDB(); res.json({ ok: true, users: db.users, sites: db.sites, settings: db.settings }); });
+app.get("/api/admin/all", requireAdmin, (req, res) => { const db = getDB(); res.json({ ok: true, users: db.users, sites: db.sites, settings: db.settings, logs: db.logs }); });
 app.post("/api/admin/settings", requireAdmin, (req, res) => { const db = getDB(); db.settings = { ...db.settings, ...req.body }; saveDB(db); res.json({ ok: true }); });
 app.post("/api/admin/user/:id/ban", requireAdmin, (req, res) => { const db = getDB(); const u = db.users.find(x=>x.id===req.params.id); if(u){ u.banned = !u.banned; saveDB(db); } res.json({ok:true}); });
 app.get("/api/admin/backup-download", requireAdmin, (req, res) => { res.setHeader("Content-Disposition", `attachment; filename="backup.json"`); res.type("json").send(JSON.stringify(getDB(), null, 2)); });
@@ -545,6 +737,7 @@ app.get("/api/admin/backup-download", requireAdmin, (req, res) => { res.setHeade
 app.use((req, res) => res.status(404).send(page("404", `<h1>404 NOT FOUND</h1><a href="/" class="btn btn-primary">RETURN HOME</a>`, "", req)));
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 SJEMAR Next-Gen OLED Engine Online!`);
+  console.log(`🚀 SJEMAR AI Engine v3.0 Online!`);
   console.log(`📡 Port: ${PORT} | 🛡️ Admin PIN: ${ADMIN_PIN}`);
+  console.log(`🤖 AI Model: ${AI_MODEL} (Free via OpenRouter)`);
 });
