@@ -1,8 +1,8 @@
 {
   "name": "sjemar-oled-ultimate",
-  "version": "9.0.0",
+  "version": "10.0.0",
   "private": true,
-  "description": "SJEMAR OLED Ultimate Engine - 100 Features - Video Animation - iOS Glass",
+  "description": "SJEMAR OLED Ultimate - 100 Features - Video Animation - iOS Glass",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
