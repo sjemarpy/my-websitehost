@@ -1,8 +1,7 @@
 {
-  "name": "sjemar-oled-ultimate",
-  "version": "7.0.0",
+  "name": "sjemar-oled",
+  "version": "8.0.0",
   "private": true,
-  "description": "SJEMAR OLED Ultimate Hosting Engine - Render Safe Build",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
