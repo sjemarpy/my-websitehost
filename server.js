@@ -1,528 +1,701 @@
 /**
- * SJEMAR PLATFORM - Production Ready Single File Server
- * Safe for Render / Railway / VPS
+ * SJEMAR OLED ULTIMATE ENGINE v6.0
+ * 80+ Real Features | Live Video-Like Background | iOS OLED Glass
+ * Deploy ready: Render / Railway / VPS
  */
 
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const zlib = require("zlib");
+const https = require("https");
 
 const app = express();
-
 const PORT = Number(process.env.PORT) || 3000;
 const ADMIN_PASS = process.env.ADMIN_PASS || "py.py.php";
+const ADMIN_PIN = "5768";
 
 const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "database.json");
 
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
+app.use(express.json({ limit: "30mb" }));
+app.use(express.urlencoded({ extended: true, limit: "30mb" }));
 
-app.use(express.json({ limit: "20mb" }));
-app.use(express.urlencoded({ extended: true, limit: "20mb" }));
+process.on("uncaughtException", function (e) { console.error("UNCAUGHT:", e && e.message); });
+process.on("unhandledRejection", function (e) { console.error("UNHANDLED:", e && e.message); });
 
-process.on("uncaughtException", function (err) {
-  console.error("UNCAUGHT EXCEPTION:", err && err.message);
+/* ============ FEATURE 97: RATE LIMITING ============ */
+const rateMap = new Map();
+app.use(function (req, res, next) {
+  const ip = req.ip || "x";
+  const now = Date.now();
+  let rec = rateMap.get(ip);
+  if (!rec || now > rec.reset) { rec = { count: 0, reset: now + 60000 }; rateMap.set(ip, rec); }
+  rec.count++;
+  const limit = req.path.indexOf("/api/") === 0 ? 120 : 400;
+  if (rec.count > limit) return res.status(429).json({ ok: false, error: "Too many requests" });
+  next();
 });
-process.on("unhandledRejection", function (err) {
-  console.error("UNHANDLED REJECTION:", err && err.message);
+
+/* ============ SECURITY HEADERS ============ */
+app.use(function (req, res, next) {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Referrer-Policy", "no-referrer-when-downgrade");
+  next();
 });
 
-/* ================= DATABASE ================= */
-
+/* ============ DATABASE ============ */
 const initialDB = {
   settings: {
-    siteName: "SJEMAR PLATFORM",
+    siteName: "SJEMAR OLED",
     maintenanceMode: false,
-    announcement: "Welcome to SJEMAR Platform. All systems operational.",
-    announcementActive: true
+    maintenanceWhitelist: [],
+    announcement: "Welcome to SJEMAR OLED Ultimate Engine. All systems operational.",
+    announcementActive: true,
+    annStart: "",
+    annEnd: "",
+    globalHeaderCode: "",
+    globalFooterCode: "",
+    defaultAntiTheft: true,
+    custom404: "",
+    telegramWebhook: "",
+    adCode: "",
+    watermarkFree: true,
+    registrationOpen: true
   },
   users: [],
   sites: [],
-  folders: ["General", "Updates", "Guides", "Tools"],
+  folders: ["General", "Updates", "Guides", "VIP Codes", "Tools", "APKs"],
   posts: [],
+  templates: [
+    { id: "t1", title: "Dark Portfolio", category: "Portfolio", uses: 0, desc: "Clean dark portfolio with glass cards.", html: "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Portfolio</title></head><body style='background:#000;color:#fff;font-family:sans-serif;padding:40px'><h1>Your Name</h1><p>Designer and Developer</p></body></html>", css: "", js: "" },
+    { id: "t2", title: "Landing Page", category: "Business", uses: 0, desc: "Product landing page with hero section.", html: "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Landing</title></head><body style='background:#0b0b0f;color:#fff;font-family:sans-serif;text-align:center;padding:60px'><h1>Launch Your Idea</h1><p>The fastest way to build.</p><button style='padding:12px 24px;background:#3b82f6;color:#fff;border:none;border-radius:10px'>Get Started</button></body></html>", css: "", js: "" },
+    { id: "t3", title: "Bio Link", category: "Social", uses: 0, desc: "Link-in-bio page for social profiles.", html: "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Bio</title></head><body style='background:#000;color:#fff;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;gap:12px;padding:50px'><h2>@username</h2><a style='color:#0a84ff' href='#'>YouTube</a><a style='color:#0a84ff' href='#'>Facebook</a></body></html>", css: "", js: "" }
+  ],
+  reports: [],
+  payments: [],
+  coupons: [],
+  newsletter: [],
+  messages: [],
+  notifications: [],
+  backups: [],
   logs: []
 };
 
 function initDB() {
   try {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    if (!fs.existsSync(DATA_FILE)) {
-      fs.writeFileSync(DATA_FILE, JSON.stringify(initialDB, null, 2), "utf8");
-    }
-  } catch (err) {
-    console.error("DB INIT ERROR:", err.message);
-  }
+    if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify(initialDB, null, 2), "utf8");
+  } catch (e) { console.error("DB INIT:", e.message); }
 }
-
 function getDB() {
   try {
     initDB();
-    const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-    return {
-      ...initialDB,
-      ...data,
-      settings: { ...initialDB.settings, ...(data.settings || {}) }
-    };
-  } catch (err) {
-    return { ...initialDB };
-  }
+    const d = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+    return Object.assign({}, initialDB, d, { settings: Object.assign({}, initialDB.settings, d.settings || {}) });
+  } catch (e) { return Object.assign({}, initialDB); }
 }
-
 function saveDB(db) {
-  try {
-    initDB();
-    fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2), "utf8");
-  } catch (err) {
-    console.error("DB SAVE ERROR:", err.message);
-  }
+  try { initDB(); fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2), "utf8"); } catch (e) { console.error("DB SAVE:", e.message); }
 }
-
 function addLog(action, details) {
   const db = getDB();
   db.logs = db.logs || [];
-  db.logs.unshift({
-    id: genId(6),
-    action: action,
-    details: details || "",
-    timestamp: new Date().toISOString()
-  });
-  if (db.logs.length > 300) db.logs = db.logs.slice(0, 300);
+  db.logs.unshift({ id: genId(6), action: action, details: details || "", timestamp: new Date().toISOString() });
+  if (db.logs.length > 400) db.logs = db.logs.slice(0, 400);
   saveDB(db);
 }
-
+function notify(text) {
+  const db = getDB();
+  db.notifications = db.notifications || [];
+  db.notifications.unshift({ id: genId(6), text: text, date: new Date().toISOString() });
+  if (db.notifications.length > 60) db.notifications = db.notifications.slice(0, 60);
+  saveDB(db);
+}
 initDB();
 
-/* ================= UTILS ================= */
-
-function genId(len) {
-  return crypto.randomBytes(len || 10).toString("hex");
+/* ============ UTILS ============ */
+function genId(len) { return crypto.randomBytes(len || 10).toString("hex"); }
+function hashPassword(p) { return crypto.createHash("sha256").update(String(p) + "SJEMAR_ULTIMATE_2026").digest("hex"); }
+function slugify(t) { return String(t || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60); }
+function escapeHTML(t) {
+  return String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
+function parseUA(ua) {
+  ua = ua || "";
+  if (/bot|crawl|spider/i.test(ua)) return "bot";
+  if (/Tablet|iPad/i.test(ua)) return "tablet";
+  if (/Mobi|Android|iPhone/i.test(ua)) return "mobile";
+  return "desktop";
+}
+function mdLite(t) {
+  let s = escapeHTML(t || "");
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  s = s.replace(/`([^`]+)`/g, "<code style='background:rgba(255,255,255,.08);padding:2px 6px;border-radius:6px'>$1</code>");
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, "<a href='$2' style='color:#0a84ff'>$1</a>");
+  s = s.replace(/\n/g, "<br>");
+  return s;
+}
+function webhookSend(text) {
+  const db = getDB();
+  const url = db.settings.telegramWebhook;
+  if (!url) return;
+  try {
+    const u = new URL(url);
+    const body = JSON.stringify({ text: text });
+    const req = https.request({ hostname: u.hostname, path: u.pathname + u.search, method: "POST", headers: { "Content-Type": "application/json" } }, function () {});
+    req.on("error", function () {});
+    req.write(body); req.end();
+  } catch (e) {}
 }
 
-function hashPassword(pass) {
-  return crypto.createHash("sha256").update(String(pass) + "SJEMAR_SALT").digest("hex");
-}
-
-function slugify(text) {
-  return String(text || "")
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 60);
-}
-
-function escapeHTML(text) {
-  return String(text == null ? "" : text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-/* ================= SESSIONS ================= */
-
+/* ============ SESSIONS / AUTH ============ */
 const userSessions = new Map();
 const adminSessions = new Map();
+const liveMap = new Map();
+const siteCache = new Map();
 
 function getCookie(req, name) {
   const cookies = req.headers.cookie || "";
   const parts = cookies.split(";");
   for (let i = 0; i < parts.length; i++) {
     const item = parts[i].trim();
-    if (item.indexOf(name + "=") === 0) {
-      return decodeURIComponent(item.substring(name.length + 1));
-    }
+    if (item.indexOf(name + "=") === 0) return decodeURIComponent(item.substring(name.length + 1));
   }
   return null;
 }
-
 function getLoggedUser(req) {
   const token = getCookie(req, "sj_user_token");
   if (!token) return null;
   const sess = userSessions.get(token);
   if (!sess) return null;
-  const maxMs = (sess.remember ? 30 : 1) * 24 * 60 * 60 * 1000;
-  if (Date.now() - sess.created > maxMs) {
-    userSessions.delete(token);
-    return null;
-  }
+  if (Date.now() - sess.created > (sess.saveMe ? 60 : 2) * 86400000) { userSessions.delete(token); return null; }
   const db = getDB();
   const user = db.users.find(function (u) { return u.id === sess.userId; });
-  if (!user || user.banned) return null;
+  if (!user || user.banned || user.deletedAt) return null;
   return user;
 }
-
 function isLoggedAdmin(req) {
-  const token = getCookie(req, "sj_admin_token");
-  if (!token) return false;
-  return adminSessions.has(token);
+  const t = getCookie(req, "sj_admin_token");
+  if (t && adminSessions.has(t)) return true;
+  return false;
 }
-
+function adminRole(req) { return isLoggedAdmin(req) ? "admin" : null; }
 function requireUser(req, res, next) {
+  const key = req.headers["x-api-key"];
+  if (key) {
+    const db = getDB();
+    const u = db.users.find(function (x) { return x.apiKey === key; });
+    if (u && !u.banned) { req.user = u; return next(); }
+  }
   const user = getLoggedUser(req);
-  if (isLoggedAdmin(req)) {
-    req.user = { id: "admin", username: "Administrator", role: "admin" };
-    return next();
-  }
-  if (!user) {
-    return res.status(401).json({ ok: false, error: "Authentication required" });
-  }
+  if (isLoggedAdmin(req)) { req.user = { id: "admin", username: "Super Admin", role: "admin", plan: "vip" }; return next(); }
+  if (!user) return res.status(401).json({ ok: false, error: "Authentication required" });
   req.user = user;
   next();
 }
-
 function requireAdmin(req, res, next) {
-  if (!isLoggedAdmin(req)) {
-    return res.status(401).json({ ok: false, error: "Admin access required" });
-  }
+  if (!isLoggedAdmin(req)) return res.status(401).json({ ok: false, error: "Admin access required" });
   next();
 }
 
-/* ================= MIDDLEWARE ================= */
-
+/* ============ MAINTENANCE (FEATURE 85) ============ */
 app.use(function (req, res, next) {
   const db = getDB();
-  const openPaths = ["/admin", "/api/admin", "/healthz", "/login", "/api/auth"];
-  const isOpen = openPaths.some(function (p) { return req.path.indexOf(p) === 0; });
-  if (db.settings.maintenanceMode && !isOpen && !isLoggedAdmin(req)) {
-    return res.status(503).send("<h1>SYSTEM MAINTENANCE</h1><p>Please check back shortly.</p>");
+  if (db.settings.maintenanceMode) {
+    const ip = req.ip || "";
+    const wl = db.settings.maintenanceWhitelist || [];
+    if (isLoggedAdmin(req) || wl.indexOf(ip) !== -1 || req.path.indexOf("/admin") === 0 || req.path.indexOf("/api/admin") === 0 || req.path === "/healthz") return next();
+    return res.status(503).send("<h1>SYSTEM MAINTENANCE</h1><p>We are upgrading our servers.</p>");
   }
   next();
 });
 
-const ANTI_THEFT_SCRIPT =
-  "\n<script>\n" +
-  "document.addEventListener('contextmenu', function (e) { e.preventDefault(); });\n" +
-  "document.addEventListener('keydown', function (e) {\n" +
-  "  if (e.key === 'F12' || (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'J' || e.key === 'C')) || (e.ctrlKey && e.key === 'u')) { e.preventDefault(); }\n" +
-  "});\n" +
+/* ============ ANTI-THEFT (FEATURE 39) ============ */
+const ANTI_THEFT_SCRIPT = "\n<script>\n" +
+  "(function(){document.addEventListener('contextmenu',function(e){e.preventDefault();});" +
+  "document.addEventListener('keydown',function(e){if(e.key==='F12'||(e.ctrlKey&&e.shiftKey&&(e.key==='I'||e.key==='J'||e.key==='C'))||(e.ctrlKey&&e.key==='u')||(e.ctrlKey&&e.key==='s')){e.preventDefault();}});" +
+  "document.addEventListener('dragstart',function(e){e.preventDefault();});" +
+  "setInterval(function(){var t=window.outerHeight-window.innerHeight>200||window.outerWidth-window.innerWidth>200;if(t){document.title='DevTools Detected';}},1500);})();\n" +
   "</script>\n";
 
-/* ================= UI ENGINE ================= */
+/* ============ FEATURE 96: GZIP HELPER ============ */
+function sendBody(req, res, code, type, body) {
+  const buf = Buffer.from(body, "utf8");
+  const ae = req.headers["accept-encoding"] || "";
+  if (buf.length > 1200 && /gzip/.test(ae)) {
+    res.statusCode = code;
+    res.setHeader("Content-Type", type);
+    res.setHeader("Content-Encoding", "gzip");
+    res.end(zlib.gzipSync(buf));
+  } else {
+    res.statusCode = code;
+    res.setHeader("Content-Type", type);
+    res.end(buf);
+  }
+}
 
+/* ============ LIVE VIDEO-LIKE BACKGROUND ============ */
+const BG_FX = "<canvas id='bgfx'></canvas>" +
+  "<script>(function(){var c=document.getElementById('bgfx');if(!c)return;var x=c.getContext('2d');var W,H,P=[];var N=0;var t=0;" +
+  "function rs(){W=c.width=window.innerWidth;H=c.height=window.innerHeight;N=W<600?26:56;while(P.length<N)P.push({x:Math.random(),y:Math.random(),r:Math.random()*2+0.6,a:Math.random()*6.28,s:Math.random()*0.0007+0.0002,h:Math.random()<0.5?215:270});}" +
+  "rs();window.addEventListener('resize',rs);" +
+  "function blob(cx,cy,r,h,al){var g=x.createRadialGradient(cx,cy,0,cx,cy,r);g.addColorStop(0,'hsla('+h+',90%,60%,'+al+')');g.addColorStop(1,'hsla('+h+',90%,60%,0)');x.fillStyle=g;x.beginPath();x.arc(cx,cy,r,0,7);x.fill();}" +
+  "function frame(){t+=0.005;x.clearRect(0,0,W,H);" +
+  "blob(W*0.3+Math.sin(t)*W*0.12,H*0.3+Math.cos(t*0.8)*H*0.1,W*0.36,215,0.16);" +
+  "blob(W*0.75+Math.cos(t*0.6)*W*0.1,H*0.7+Math.sin(t*0.7)*H*0.12,W*0.3,270,0.12);" +
+  "blob(W*0.55+Math.sin(t*1.3)*W*0.15,H*0.2+Math.cos(t*1.1)*H*0.08,W*0.22,160,0.09);" +
+  "for(var i=0;i<P.length;i++){var p=P[i];p.a+=0.01;p.x+=Math.cos(p.a)*p.s;p.y+=Math.sin(p.a)*p.s*0.6-0.00008;if(p.x<0)p.x=1;if(p.x>1)p.x=0;if(p.y<0)p.y=1;if(p.y>1)p.y=0;x.fillStyle='hsla('+p.h+',90%,70%,0.45)';x.beginPath();x.arc(p.x*W,p.y*H,p.r,0,7);x.fill();}" +
+  "requestAnimationFrame(frame);}" +
+  "if(!window.matchMedia||!window.matchMedia('(prefers-reduced-motion: reduce)').matches){frame();}})();</script>";
+
+/* ============ UI ENGINE (iOS OLED GLASS) ============ */
 function page(title, content, script, req) {
   const db = getDB();
   const user = getLoggedUser(req || {});
   const isAdmin = isLoggedAdmin(req || {});
-  const current = (req && req.path) || "";
-  const ann = db.settings.announcementActive ? db.settings.announcement : "";
+  const cur = (req && req.path) || "";
+  let ann = "";
+  if (db.settings.announcementActive && db.settings.announcement) {
+    const now = Date.now();
+    const st = db.settings.annStart ? new Date(db.settings.annStart).getTime() : 0;
+    const en = db.settings.annEnd ? new Date(db.settings.annEnd).getTime() : Infinity;
+    if (now >= st && now <= en) ann = db.settings.announcement;
+  }
+  const live = countLive();
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${escapeHTML(title)} - ${escapeHTML(db.settings.siteName)}</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-:root{--bg:#000;--card:rgba(18,18,22,.95);--border:rgba(255,255,255,.08);--text:#fff;--muted:#9ca3af;--accent:#3b82f6;--danger:#ef4444;--success:#10b981}
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;-webkit-font-smoothing:antialiased}
-.bgfx{position:fixed;inset:0;z-index:-1;overflow:hidden;background:#000}
-.bgfx::before{content:'';position:absolute;width:200vmax;height:200vmax;top:50%;left:50%;background:conic-gradient(from 0deg,transparent,rgba(59,130,246,.12),transparent,rgba(139,92,246,.12),transparent);animation:spin 40s linear infinite;transform:translate(-50%,-50%)}
-@keyframes spin{to{transform:translate(-50%,-50%) rotate(360deg)}}
-.header{position:sticky;top:0;z-index:100;background:rgba(0,0,0,.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:14px 20px}
-.header-in{max-width:1200px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-.logo{font-size:20px;font-weight:800;background:linear-gradient(135deg,#3b82f6,#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.nav{display:flex;gap:6px;overflow-x:auto;max-width:100%}
-.nav a{color:var(--muted);text-decoration:none;font-size:14px;padding:8px 14px;border-radius:8px;white-space:nowrap}
-.nav a.active,.nav a:hover{color:#fff;background:rgba(255,255,255,.06)}
-.container{max-width:1200px;margin:0 auto;padding:24px 20px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:24px;margin-bottom:20px;backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
-h1{font-size:32px;font-weight:800;margin-bottom:12px}
-h2{font-size:24px;font-weight:700;margin-bottom:12px}
-h3{font-size:18px;font-weight:600;margin-bottom:8px}
-p{color:var(--muted);line-height:1.7;margin-bottom:10px;font-size:15px}
-.btn{display:inline-block;padding:12px 24px;border:none;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;text-decoration:none;transition:transform .15s,opacity .15s}
-.btn:active{transform:scale(.97)}
-.btn-primary{background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:#fff}
-.btn-ghost{background:rgba(255,255,255,.06);color:#fff;border:1px solid var(--border)}
-.btn-danger{background:rgba(239,68,68,.12);color:var(--danger);border:1px solid rgba(239,68,68,.25)}
-.btn-sm{padding:8px 14px;font-size:13px}
-.input{width:100%;padding:13px 16px;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:10px;color:#fff;font-size:15px;margin-bottom:12px;outline:none}
-.input:focus{border-color:var(--accent)}
-textarea.input{min-height:140px;resize:vertical;font-family:'Courier New',monospace;font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
-.stat{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;text-align:center}
-.stat b{display:block;font-size:26px;color:var(--accent)}
-.stat span{font-size:12px;color:var(--muted)}
-.badge{display:inline-block;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;background:rgba(59,130,246,.12);color:var(--accent);border:1px solid rgba(59,130,246,.25)}
-.announce{background:rgba(59,130,246,.08);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center;font-size:14px;margin-bottom:20px}
-.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-table{width:100%;border-collapse:collapse;font-size:14px}
-th,td{padding:10px;border-bottom:1px solid var(--border);text-align:left}
-th{color:var(--muted);font-size:12px;text-transform:uppercase}
-@media(max-width:600px){h1{font-size:24px}.container{padding:16px 12px}}
-</style>
-</head>
-<body>
-<div class="bgfx"></div>
-<header class="header">
-  <div class="header-in">
-    <div class="logo">${escapeHTML(db.settings.siteName)}</div>
-    <nav class="nav">
-      <a href="/" class="${current === "/" ? "active" : ""}">Home</a>
-      <a href="/create" class="${current === "/create" ? "active" : ""}">Create</a>
-      <a href="/posts" class="${current === "/posts" ? "active" : ""}">Posts</a>
-      <a href="/dashboard" class="${current === "/dashboard" ? "active" : ""}">Dashboard</a>
-      ${isAdmin ? '<a href="/admin">Admin</a>' : ''}
-      ${user ? '<a href="/logout">Logout (' + escapeHTML(user.username) + ')</a>' : '<a href="/login">Login</a>'}
-    </nav>
-  </div>
-</header>
-<main class="container">
-  ${ann ? '<div class="announce">' + escapeHTML(ann) + '</div>' : ''}
-  ${content}
-</main>
-${script || ""}
-</body>
-</html>`;
+  return "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>" +
+    "<meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no'>" +
+    "<meta name='theme-color' content='#000000'>" +
+    "<link rel='manifest' href='/manifest.webmanifest'>" +
+    "<title>" + escapeHTML(title) + " - " + escapeHTML(db.settings.siteName) + "</title>" +
+    "<style>" +
+    "*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}" +
+    ":root{--bg:#000;--card:rgba(22,22,26,.62);--card2:rgba(28,28,32,.75);--bd:rgba(255,255,255,.09);--tx:#fff;--mut:#8e8e93;--ac:#0a84ff;--ac2:#bf5af2;--ok:#32d74b;--dg:#ff453a;--blur:blur(30px) saturate(180%)}" +
+    "html{scroll-behavior:smooth}" +
+    "body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Roboto,sans-serif;min-height:100vh;overflow-x:hidden;-webkit-font-smoothing:antialiased}" +
+    "#bgfx{position:fixed;inset:0;z-index:-2;width:100%;height:100%}" +
+    "body::before{content:'';position:fixed;inset:0;z-index:-1;background:radial-gradient(1200px 600px at 80% -10%,rgba(10,132,255,.10),transparent 60%),radial-gradient(900px 500px at 10% 110%,rgba(191,90,242,.08),transparent 60%);pointer-events:none}" +
+    ".hd{position:sticky;top:0;z-index:100;background:rgba(0,0,0,.72);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border-bottom:1px solid var(--bd)}" +
+    ".hd-in{max-width:1200px;margin:0 auto;padding:14px 20px;display:flex;align-items:center;gap:14px;justify-content:space-between;flex-wrap:wrap}" +
+    ".logo{font-size:20px;font-weight:800;letter-spacing:-.4px;background:linear-gradient(135deg,#0a84ff,#bf5af2);-webkit-background-clip:text;-webkit-text-fill-color:transparent;text-decoration:none}" +
+    ".nv{display:flex;gap:4px;overflow-x:auto;max-width:100%;scrollbar-width:none}" +
+    ".nv::-webkit-scrollbar{display:none}" +
+    ".nv a{color:var(--mut);text-decoration:none;font-size:14px;font-weight:600;padding:9px 14px;border-radius:12px;white-space:nowrap;transition:.2s}" +
+    ".nv a.on,.nv a:hover{color:#fff;background:rgba(255,255,255,.07)} +
+    ".wrap{max-width:1200px;margin:0 auto;padding:24px 20px 60px}" +
+    ".card{background:var(--card);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border:1px solid var(--bd);border-radius:22px;padding:24px;margin-bottom:20px;box-shadow:0 14px 44px rgba(0,0,0,.55);transition:transform .25s,box-shadow .25s}" +
+    ".card:hover{transform:translateY(-3px);box-shadow:0 20px 60px rgba(0,0,0,.7)}" +
+    "h1{font-size:34px;font-weight:800;letter-spacing:-1px;margin-bottom:12px}" +
+    "h2{font-size:24px;font-weight:700;margin-bottom:14px}" +
+    "h3{font-size:18px;font-weight:600;margin-bottom:8px}" +
+    "p{color:var(--mut);line-height:1.7;font-size:15px;margin-bottom:10px}" +
+    ".btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:13px 26px;border:none;border-radius:14px;font-size:15px;font-weight:700;cursor:pointer;text-decoration:none;transition:transform .15s,box-shadow .2s;color:#fff}" +
+    ".btn:active{transform:scale(.96)}" +
+    ".btn-p{background:linear-gradient(135deg,#0a84ff,#bf5af2);box-shadow:0 8px 26px rgba(10,132,255,.35)}" +
+    ".btn-g{background:rgba(255,255,255,.09);border:1px solid var(--bd)}" +
+    ".btn-d{background:rgba(255,69,58,.14);color:var(--dg);border:1px solid rgba(255,69,58,.3)}" +
+    ".btn-s{padding:8px 14px;font-size:13px;border-radius:10px}" +
+    ".inp{width:100%;padding:14px 16px;background:rgba(255,255,255,.05);border:1px solid var(--bd);border-radius:14px;color:#fff;font-size:15px;margin-bottom:14px;outline:none;transition:.25s;font-family:inherit}" +
+    ".inp:focus{border-color:var(--ac);box-shadow:0 0 0 4px rgba(10,132,255,.18);background:rgba(255,255,255,.08)}" +
+    "textarea.inp{min-height:130px;resize:vertical;font-family:'Courier New',monospace;font-size:13px}" +
+    "select.inp{appearance:none}" +
+    ".grid{display:grid;gap:18px}" +
+    ".g2{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}" +
+    ".g3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}" +
+    ".g4{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}" +
+    ".stat{background:var(--card);backdrop-filter:var(--blur);border:1px solid var(--bd);border-radius:18px;padding:18px;text-align:center}" +
+    ".stat b{display:block;font-size:30px;font-weight:800;background:linear-gradient(135deg,#0a84ff,#bf5af2);-webkit-background-clip:text;-webkit-text-fill-color:transparent}" +
+    ".stat span{font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:var(--mut)}" +
+    ".badge{display:inline-block;padding:4px 11px;border-radius:20px;font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;background:rgba(10,132,255,.14);color:var(--ac);border:1px solid rgba(10,132,255,.3)}" +
+    ".badge.ok{background:rgba(50,215,75,.14);color:var(--ok);border-color:rgba(50,215,75,.3)}" +
+    ".badge.dg{background:rgba(255,69,58,.14);color:var(--dg);border-color:rgba(255,69,58,.3)}" +
+    ".badge.gold{background:rgba(255,215,0,.14);color:gold;border-color:rgba(255,215,0,.35)}" +
+    ".ann{background:linear-gradient(90deg,rgba(10,132,255,.12),rgba(191,90,242,.12));border:1px solid var(--bd);border-radius:14px;padding:12px;text-align:center;font-size:14px;font-weight:600;margin-bottom:20px;backdrop-filter:var(--blur)}" +
+    ".row{display:flex;gap:10px;flex-wrap:wrap}" +
+    ".tbl{width:100%;border-collapse:collapse;font-size:14px}" +
+    ".tbl th,.tbl td{padding:12px 10px;border-bottom:1px solid var(--bd);text-align:left}" +
+    ".tbl th{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:1px}" +
+    ".tw{overflow-x:auto}" +
+    ".tabs{display:flex;gap:8px;overflow-x:auto;margin-bottom:20px;scrollbar-width:none}" +
+    ".tabs::-webkit-scrollbar{display:none}" +
+    ".tab{padding:10px 20px;border-radius:30px;background:rgba(255,255,255,.06);border:1px solid var(--bd);color:var(--mut);font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap}" +
+    ".tab.on{background:linear-gradient(135deg,#0a84ff,#bf5af2);color:#fff;border-color:transparent}" +
+    ".pane{display:none;animation:fade .35s ease}" +
+    ".pane.on{display:block}" +
+    "@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}" +
+    ".bars{display:flex;align-items:flex-end;gap:4px;height:90px;margin:12px 0}" +
+    ".bars div{flex:1;background:linear-gradient(180deg,#0a84ff,#bf5af2);border-radius:4px 4px 0 0;min-height:3px}" +
+    ".avatar{width:44px;height:44px;border-radius:50%;object-fit:cover;border:2px solid var(--bd)}" +
+    ".live{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 10px var(--ok);animation:pulse 1.6s infinite}" +
+    "@keyframes pulse{50%{opacity:.35}}" +
+    "@media(max-width:640px){h1{font-size:26px}.card{padding:18px;border-radius:18px}.wrap{padding:16px 12px 50px}}" +
+    "</style>" +
+    (db.settings.globalHeaderCode || "") +
+    "</head><body>" + BG_FX +
+    "<header class='hd'><div class='hd-in'>" +
+    "<a class='logo' href='/'>" + escapeHTML(db.settings.siteName) + "</a>" +
+    "<nav class='nv'>" +
+    "<a href='/' class='" + (cur === "/" ? "on" : "") + "'>Home</a>" +
+    "<a href='/create' class='" + (cur === "/create" ? "on" : "") + "'>Publish</a>" +
+    "<a href='/templates' class='" + (cur === "/templates" ? "on" : "") + "'>Templates</a>" +
+    "<a href='/posts' class='" + (cur === "/posts" ? "on" : "") + "'>Posts</a>" +
+    "<a href='/search' class='" + (cur === "/search" ? "on" : "") + "'>Search</a>" +
+    "<a href='/dashboard' class='" + (cur === "/dashboard" ? "on" : "") + "'>Vault</a>" +
+    (isAdmin ? "<a href='/admin.html' class='" + (cur.indexOf("/admin") === 0 ? "on" : "") + "'>Admin</a>" : "") +
+    (user ? "<a href='/logout'>Logout</a>" : "<a href='/create'>Login</a>") +
+    "</nav>" +
+    "<span style='font-size:12px;color:var(--mut)'><span class='live'></span> " + live + " live</span>" +
+    "</div></header>" +
+    "<main class='wrap'>" +
+    (ann ? "<div class='ann'>" + escapeHTML(ann) + "</div>" : "") +
+    content +
+    "</main>" +
+    (script || "") +
+    (db.settings.globalFooterCode || "") +
+    "<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('/sw.js').catch(function(){});}</script>" +
+    "</body></html>";
 }
 
-/* ================= PAGES ================= */
+function countLive() {
+  const now = Date.now();
+  let n = 0;
+  liveMap.forEach(function (v) { if (now - v < 60000) n++; });
+  return n;
+}
+
+/* ============ CRON (FEATURE 98): backups, schedule, expiry, purge ============ */
+setInterval(function () {
+  try {
+    const db = getDB();
+    let changed = false;
+    const now = Date.now();
+    (db.sites || []).forEach(function (s) {
+      if (s.draft && s.scheduledAt && new Date(s.scheduledAt).getTime() <= now) { s.draft = false; s.published = true; changed = true; siteCache.delete(s.slug); }
+      if (s.published && s.expiresAt && new Date(s.expiresAt).getTime() <= now) { s.published = false; changed = true; siteCache.delete(s.slug); }
+    });
+    (db.users || []).forEach(function (u) {
+      if (u.deletedAt && now - new Date(u.deletedAt).getTime() > 7 * 86400000) {
+        db.users = db.users.filter(function (x) { return x.id !== u.id; });
+        db.sites = db.sites.filter(function (s) { return s.userId !== u.id; });
+        changed = true;
+      }
+      if (u.planExpires && new Date(u.planExpires).getTime() <= now && u.plan !== "free") { u.plan = "free"; changed = true; }
+    });
+    if (changed) saveDB(db);
+    db.backups = db.backups || [];
+    db.backups.unshift({ ts: new Date().toISOString(), data: JSON.stringify(db) });
+    if (db.backups.length > 7) db.backups = db.backups.slice(0, 7);
+    saveDB(db);
+  } catch (e) { console.error("CRON:", e.message); }
+}, 3600000);
+
+/* ============ PAGES ============ */
 
 app.get("/", function (req, res) {
   const db = getDB();
-  const totalViews = db.sites.reduce(function (s, x) { return s + (x.views || 0); }, 0);
-  const recent = db.sites.slice(0, 6);
+  const totalViews = (db.sites || []).reduce(function (a, s) { return a + (s.views || 0); }, 0);
+  const board = {};
+  (db.sites || []).forEach(function (s) { board[s.authorName] = (board[s.authorName] || 0) + (s.views || 0); });
+  const leaders = Object.keys(board).sort(function (a, b) { return board[b] - board[a]; }).slice(0, 5);
+  const recent = (db.sites || []).filter(function (s) { return s.published && !s.draft; }).slice(0, 6);
 
-  res.send(page("Home", `
-    <h1>Website Hosting Platform</h1>
-    <p>Create, host and protect your websites with real isolation and anti-theft engine.</p>
-    <div class="stats">
-      <div class="stat"><b>${db.sites.length}</b><span>Websites</span></div>
-      <div class="stat"><b>${db.users.length}</b><span>Users</span></div>
-      <div class="stat"><b>${db.posts.length}</b><span>Posts</span></div>
-      <div class="stat"><b>${totalViews}</b><span>Total Views</span></div>
-    </div>
-    <h2>Recent Websites</h2>
-    <div class="grid">
-      ${recent.map(function (s) {
-        return '<div class="card"><span class="badge">' + escapeHTML(s.category || "Site") + '</span>' +
-          '<h3 style="margin-top:10px">' + escapeHTML(s.title) + '</h3>' +
-          '<p>By ' + escapeHTML(s.authorName) + ' - Views ' + (s.views || 0) + '</p>' +
-          '<div class="row"><a class="btn btn-primary btn-sm" target="_blank" href="/site/' + escapeHTML(s.slug) + '">Visit</a>' +
-          '<a class="btn btn-ghost btn-sm" href="/site/' + escapeHTML(s.slug) + '/download">Download</a></div></div>';
-      }).join("") || '<div class="card"><p>No websites published yet.</p></div>'}
-    </div>
-    <div class="row"><a class="btn btn-primary" href="/create">Create Your Website</a></div>
-  `, "", req));
-});
-
-app.get("/login", function (req, res) {
-  res.send(page("Login", `
-    <div style="max-width:420px;margin:40px auto">
-      <div class="card">
-        <h2>Account Login</h2>
-        <form id="loginForm">
-          <input class="input" id="username" placeholder="Username" required>
-          <input class="input" id="password" type="password" placeholder="Password" required>
-          <label style="display:flex;gap:8px;align-items:center;font-size:14px;color:var(--muted);margin-bottom:14px">
-            <input type="checkbox" id="remember" style="width:16px;height:16px"> Remember me 30 days
-          </label>
-          <button class="btn btn-primary" style="width:100%" type="submit">Login</button>
-        </form>
-        <p style="margin-top:14px;font-size:14px">No account? <a href="/register" style="color:var(--accent)">Register</a></p>
-      </div>
-    </div>
-  `, `
-<script>
-document.getElementById('loginForm').addEventListener('submit', function (e) {
-  e.preventDefault();
-  var payload = {
-    username: document.getElementById('username').value,
-    password: document.getElementById('password').value,
-    remember: document.getElementById('remember').checked
-  };
-  fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-    .then(function (r) { return r.json(); })
-    .then(function (d) {
-      if (d.ok) { window.location.href = '/dashboard'; } else { alert(d.error || 'Login failed'); }
-    })
-    .catch(function () { alert('Network error'); });
-});
-</script>
-  `, req));
+  res.send(page("Home",
+    "<h1>Ultimate HTML Hosting Platform</h1>" +
+    "<p>Publish, protect and analyze your websites with real isolation, anti-theft engine and live analytics.</p>" +
+    "<div class='grid g4' style='margin:22px 0'>" +
+    "<div class='stat'><b>" + (db.sites || []).length + "</b><span>Websites</span></div>" +
+    "<div class='stat'><b>" + (db.users || []).length + "</b><span>Creators</span></div>" +
+    "<div class='stat'><b>" + totalViews + "</b><span>Total Views</span></div>" +
+    "<div class='stat'><b>" + countLive() + "</b><span>Live Now</span></div>" +
+    "</div>" +
+    "<div class='row' style='margin-bottom:24px'><a class='btn btn-p' href='/create'>Publish HTML to Link</a><a class='btn btn-g' href='/templates'>Browse Templates</a></div>" +
+    "<h2>Leaderboard</h2><div class='card'><div class='tw'><table class='tbl'><tr><th>Rank</th><th>Creator</th><th>Total Views</th></tr>" +
+    (leaders.map(function (n, i) { return "<tr><td>" + (i + 1) + "</td><td><a style='color:var(--ac);text-decoration:none' href='/u/" + encodeURIComponent(n) + "'>" + escapeHTML(n) + "</a></td><td>" + board[n] + "</td></tr>"; }).join("") || "<tr><td colspan='3'>No data yet</td></tr>") +
+    "</table></div></div>" +
+    "<h2>Recent Websites</h2><div class='grid g3'>" +
+    (recent.map(function (s) {
+      return "<div class='card'><span class='badge'>" + escapeHTML(s.category || "Site") + "</span>" +
+        "<h3 style='margin-top:10px'>" + escapeHTML(s.title) + "</h3>" +
+        "<p>" + escapeHTML((s.bio || "").slice(0, 90)) + "</p>" +
+        "<p style='font-size:12px'>by " + escapeHTML(s.authorName) + " - " + (s.views || 0) + " views</p>" +
+        "<div class='row'><a class='btn btn-p btn-s' target='_blank' href='/site/" + escapeHTML(s.slug) + "'>Visit</a>" +
+        "<button class='btn btn-g btn-s' data-react='like' data-id='" + s.id + "'>Like " + ((s.reactions || {}).like || 0) + "</button></div></div>";
+    }).join("") || "<div class='card'><p>No websites published yet.</p></div>") +
+    "</div>",
+    "<script>document.addEventListener('click',function(e){var b=e.target.closest('[data-react]');if(!b)return;" +
+    "fetch('/api/site/'+b.getAttribute('data-id')+'/react',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:b.getAttribute('data-react')})}).then(function(){location.reload();});});</script>",
+    req));
 });
 
-app.get("/register", function (req, res) {
-  res.send(page("Register", `
-    <div style="max-width:420px;margin:40px auto">
-      <div class="card">
-        <h2>Create Account</h2>
-        <form id="regForm">
-          <input class="input" id="rUser" placeholder="Username (min 3 chars)" required>
-          <input class="input" id="rPass" type="password" placeholder="Password (min 6 chars)" required>
-          <input class="input" id="rPass2" type="password" placeholder="Confirm password" required>
-          <button class="btn btn-primary" style="width:100%" type="submit">Register</button>
-        </form>
-        <p style="margin-top:14px;font-size:14px">Have account? <a href="/login" style="color:var(--accent)">Login</a></p>
-      </div>
-    </div>
-  `, `
-<script>
-document.getElementById('regForm').addEventListener('submit', function (e) {
-  e.preventDefault();
-  var p1 = document.getElementById('rPass').value;
-  var p2 = document.getElementById('rPass2').value;
-  if (p1 !== p2) { alert('Passwords do not match'); return; }
-  var payload = { username: document.getElementById('rUser').value, password: p1 };
-  fetch('/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-    .then(function (r) { return r.json(); })
-    .then(function (d) {
-      if (d.ok) { alert('Account created. Please login.'); window.location.href = '/login'; }
-      else { alert(d.error || 'Registration failed'); }
-    })
-    .catch(function () { alert('Network error'); });
-});
-</script>
-  `, req));
-});
-
-app.get("/logout", function (req, res) {
-  const token = getCookie(req, "sj_user_token");
-  if (token) userSessions.delete(token);
-  res.clearCookie("sj_user_token", { path: "/" });
-  res.redirect("/");
+app.get("/templates", function (req, res) {
+  const db = getDB();
+  res.send(page("Templates",
+    "<h1>Template Gallery</h1><p>Start from a ready-made template. One click creates a draft in your vault.</p>" +
+    "<div class='grid g3'>" +
+    (db.templates || []).map(function (t) {
+      return "<div class='card'><span class='badge'>" + escapeHTML(t.category) + "</span><h3 style='margin-top:10px'>" + escapeHTML(t.title) + "</h3>" +
+        "<p>" + escapeHTML(t.desc) + "</p><p style='font-size:12px'>Used " + (t.uses || 0) + " times</p>" +
+        "<button class='btn btn-p btn-s' data-use='" + t.id + "'>Use Template</button></div>";
+    }).join("") + "</div>",
+    "<script>document.addEventListener('click',function(e){var b=e.target.closest('[data-use]');if(!b)return;" +
+    "fetch('/api/templates/'+b.getAttribute('data-use')+'/use',{method:'POST'}).then(function(r){return r.json();}).then(function(d){if(d.ok){alert('Draft created in your vault');location.href='/dashboard';}else alert(d.error||'Login required');});});</script>",
+    req));
 });
 
 app.get("/create", function (req, res) {
   const user = getLoggedUser(req);
-  if (!user && !isLoggedAdmin(req)) return res.redirect("/login");
   const db = getDB();
 
-  res.send(page("Create Website", `
-    <h1>Create Website</h1>
-    <div class="card">
-      <form id="pubForm">
-        <input class="input" id="pTitle" placeholder="Website Title *" required>
-        <input class="input" id="pSlug" placeholder="URL Slug * (auto from title)">
-        <input class="input" id="pBio" placeholder="Description (optional)">
-        <select class="input" id="pCat">
-          ${["General", "Portfolio", "Business", "Tools", "Gaming", "Education"].map(function (c) {
-            return '<option value="' + c + '">' + c + '</option>';
-          }).join("")}
-        </select>
-        <input class="input" id="pPass" type="password" placeholder="Access password (optional)">
-        <textarea class="input" id="pHtml" placeholder="HTML Code *" required style="min-height:260px"></textarea>
-        <textarea class="input" id="pCss" placeholder="Custom CSS (optional)" style="min-height:100px"></textarea>
-        <textarea class="input" id="pJs" placeholder="Custom JavaScript (optional)" style="min-height:100px"></textarea>
-        <label style="display:flex;gap:8px;align-items:center;font-size:14px;color:var(--muted);margin-bottom:14px">
-          <input type="checkbox" id="pTheft" checked style="width:16px;height:16px"> Enable Anti-Theft Protection
-        </label>
-        <button class="btn btn-primary" style="width:100%" type="submit">Publish Website</button>
-      </form>
-      <div id="pubResult" style="display:none;margin-top:16px">
-        <p style="color:var(--success)">Website published successfully.</p>
-        <div class="row">
-          <a id="pubLink" class="btn btn-primary btn-sm" target="_blank" href="#">Visit Site</a>
-          <button class="btn btn-ghost btn-sm" onclick="copyPubLink()">Copy Link</button>
-        </div>
-      </div>
-    </div>
-  `, `
-<script>
-document.getElementById('pTitle').addEventListener('input', function (e) {
-  document.getElementById('pSlug').value = e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!user && !isLoggedAdmin(req)) {
+    return res.send(page("Login",
+      "<div style='max-width:420px;margin:50px auto'><div class='card'><h2>Authentication Required</h2>" +
+      "<p>Login or create account to claim project ownership with real isolation.</p>" +
+      "<input class='inp' id='au' placeholder='Username'>" +
+      "<input class='inp' id='ap' type='password' placeholder='Password'>" +
+      "<label style='display:flex;gap:8px;align-items:center;font-size:14px;color:var(--mut);margin-bottom:14px'><input type='checkbox' id='asv' style='width:17px;height:17px'> Save me (60 days)</label>" +
+      "<button class='btn btn-p' style='width:100%' id='aub'>Continue to Publisher</button>" +
+      "<p id='aue' style='color:var(--dg);display:none;margin-top:12px'></p></div></div>",
+      "<script>document.getElementById('aub').addEventListener('click',function(){" +
+      "var p={username:document.getElementById('au').value,password:document.getElementById('ap').value,saveMe:document.getElementById('asv').checked};" +
+      "fetch('/api/auth/quick-auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}).then(function(r){return r.json();}).then(function(d){if(d.ok)location.reload();else{var e=document.getElementById('aue');e.textContent=d.error;e.style.display='block';}});});</script>",
+      req));
+  }
+
+  res.send(page("Publish HTML to Link",
+    "<h1>HTML to Link Suite</h1><p>Logged in as <strong style='color:#fff'>" + escapeHTML(user ? user.username : "Admin") + "</strong> - Plan: <span class='badge gold'>" + escapeHTML((user && user.plan) || "vip") + "</span></p>" +
+    "<div class='card'><h2>Project Details</h2>" +
+    "<div class='grid g2'>" +
+    "<input class='inp' id='fTitle' placeholder='Project Title *'>" +
+    "<input class='inp' id='fSlug' placeholder='Unique slug * (auto from title)'>" +
+    "</div>" +
+    "<input class='inp' id='fBio' placeholder='Project bio / description'>" +
+    "<div class='grid g2'>" +
+    "<select class='inp' id='fCat'><option>General</option><option>Portfolio</option><option>Business</option><option>Tools</option><option>Gaming</option><option>Education</option></select>" +
+    "<input class='inp' id='fTags' placeholder='Tags comma separated'>" +
+    "</div>" +
+    "<div class='grid g2'>" +
+    "<input class='inp' id='fColl' placeholder='Collection name (optional)'>" +
+    "<input class='inp' id='fPass' type='password' placeholder='Site access password (optional)'>" +
+    "</div>" +
+    "<h2 style='margin-top:10px'>Code</h2>" +
+    "<input type='file' id='fFile' accept='.html,.htm' class='inp' style='padding:10px'>" +
+    "<textarea class='inp' id='fHtml' placeholder='HTML Code *' style='min-height:240px'></textarea>" +
+    "<div class='grid g2'>" +
+    "<textarea class='inp' id='fCss' placeholder='Custom CSS (optional)'></textarea>" +
+    "<textarea class='inp' id='fJs' placeholder='Custom JavaScript (optional)'></textarea>" +
+    "</div>" +
+    "<h2 style='margin-top:10px'>SEO and Meta</h2>" +
+    "<div class='grid g2'>" +
+    "<input class='inp' id='fSeoT' placeholder='SEO title'>" +
+    "<input class='inp' id='fSeoD' placeholder='SEO description'>" +
+    "</div>" +
+    "<div class='grid g2'>" +
+    "<input class='inp' id='fSeoI' placeholder='OG image URL'>" +
+    "<input class='inp' id='fFav' placeholder='Favicon URL or dataURL'>" +
+    "</div>" +
+    "<h2 style='margin-top:10px'>Protection and Schedule</h2>" +
+    "<div class='grid g2'>" +
+    "<input class='inp' id='fSched' type='datetime-local' title='Scheduled publish'>" +
+    "<input class='inp' id='fExp' type='datetime-local' title='Expiry date'>" +
+    "</div>" +
+    "<div class='grid g2'>" +
+    "<input class='inp' id='fLimit' type='number' placeholder='View limit (0 = unlimited)'>" +
+    "<input class='inp' id='fDomain' placeholder='Domain lock (e.g. example.com, blank = off)'>" +
+    "</div>" +
+    "<label style='display:flex;gap:10px;align-items:center;margin-bottom:10px;cursor:pointer'><input type='checkbox' id='fTheft' checked style='width:18px;height:18px'> Anti-theft (block right click and inspect)</label>" +
+    "<label style='display:flex;gap:10px;align-items:center;margin-bottom:10px;cursor:pointer'><input type='checkbox' id='fObf' style='width:18px;height:18px'> Obfuscate output (base64 wrap)</label>" +
+    "<label style='display:flex;gap:10px;align-items:center;margin-bottom:10px;cursor:pointer'><input type='checkbox' id='fClone' checked style='width:18px;height:18px'> Allow public clone</label>" +
+    "<label style='display:flex;gap:10px;align-items:center;margin-bottom:18px;cursor:pointer'><input type='checkbox' id='fDraft' style='width:18px;height:18px'> Save as draft (do not publish yet)</label>" +
+    "<button class='btn btn-p' style='width:100%' id='fPub'>Publish and Generate Link</button>" +
+    "<div id='fRes' style='display:none;margin-top:18px' class='card'><h3 style='color:var(--ok)'>Website Published</h3>" +
+    "<p id='fUrl' style='word-break:break-all;color:#fff'></p>" +
+    "<div class='row'><a id='fVisit' class='btn btn-p btn-s' target='_blank' href='#'>Visit Site</a><button class='btn btn-g btn-s' id='fCopy'>Copy Link</button></div></div>" +
+    "</div>",
+    "<script>" +
+    "document.getElementById('fTitle').addEventListener('input',function(e){document.getElementById('fSlug').value=e.target.value.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');});" +
+    "document.getElementById('fFile').addEventListener('change',function(e){var f=e.target.files[0];if(!f)return;var r=new FileReader();r.onload=function(){document.getElementById('fHtml').value=r.result;};r.readAsText(f);});" +
+    "document.getElementById('fPub').addEventListener('click',function(){" +
+    "var p={title:document.getElementById('fTitle').value,slug:document.getElementById('fSlug').value,bio:document.getElementById('fBio').value," +
+    "category:document.getElementById('fCat').value,tags:document.getElementById('fTags').value,collection:document.getElementById('fColl').value," +
+    "sitePassword:document.getElementById('fPass').value,html:document.getElementById('fHtml').value,css:document.getElementById('fCss').value,js:document.getElementById('fJs').value," +
+    "seoTitle:document.getElementById('fSeoT').value,seoDesc:document.getElementById('fSeoD').value,seoImage:document.getElementById('fSeoI').value,favicon:document.getElementById('fFav').value," +
+    "scheduledAt:document.getElementById('fSched').value,expiresAt:document.getElementById('fExp').value,viewLimit:Number(document.getElementById('fLimit').value||0)," +
+    "domainLock:document.getElementById('fDomain').value,antiTheft:document.getElementById('fTheft').checked,obfuscate:document.getElementById('fObf').checked," +
+    "allowClone:document.getElementById('fClone').checked,draft:document.getElementById('fDraft').checked};" +
+    "fetch('/api/publish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}).then(function(r){return r.json();}).then(function(d){" +
+    "if(d.ok){document.getElementById('fUrl').textContent=d.site.url;document.getElementById('fVisit').href=d.site.url;document.getElementById('fRes').style.display='block';}else alert(d.error||'Failed');});});" +
+    "document.getElementById('fCopy').addEventListener('click',function(){navigator.clipboard.writeText(document.getElementById('fUrl').textContent);alert('Copied');});" +
+    "</script>",
+    req));
 });
-function copyPubLink() {
-  var url = document.getElementById('pubLink').href;
-  if (navigator.clipboard) { navigator.clipboard.writeText(url); alert('Link copied'); }
-}
-document.getElementById('pubForm').addEventListener('submit', function (e) {
-  e.preventDefault();
-  var payload = {
-    title: document.getElementById('pTitle').value,
-    slug: document.getElementById('pSlug').value,
-    bio: document.getElementById('pBio').value,
-    category: document.getElementById('pCat').value,
-    sitePassword: document.getElementById('pPass').value,
-    html: document.getElementById('pHtml').value,
-    css: document.getElementById('pCss').value,
-    js: document.getElementById('pJs').value,
-    antiTheft: document.getElementById('pTheft').checked
-  };
-  fetch('/api/publish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-    .then(function (r) { return r.json(); })
-    .then(function (d) {
-      if (d.ok) {
-        document.getElementById('pubLink').href = d.site.url;
-        document.getElementById('pubResult').style.display = 'block';
-      } else { alert(d.error || 'Publish failed'); }
-    })
-    .catch(function () { alert('Network error'); });
-});
-</script>
-  `, req));
+
+app.get("/edit/:id", requireUser, function (req, res) {
+  const db = getDB();
+  const site = (db.sites || []).find(function (s) { return s.id === req.params.id; });
+  if (!site || (site.userId !== req.user.id && req.user.role !== "admin")) return res.status(404).send("Not found");
+  res.send(page("Editor",
+    "<h1>Live Editor - " + escapeHTML(site.title) + "</h1>" +
+    "<div class='grid g2'>" +
+    "<div><textarea class='inp' id='eHtml' style='min-height:420px'>" + escapeHTML(site.rawHtml || site.html || "") + "</textarea>" +
+    "<textarea class='inp' id='eCss' style='min-height:120px'>" + escapeHTML(site.rawCss || "") + "</textarea>" +
+    "<textarea class='inp' id='eJs' style='min-height:120px'>" + escapeHTML(site.rawJs || "") + "</textarea>" +
+    "<div class='row'><button class='btn btn-p btn-s' id='eSave'>Save and Republish</button><button class='btn btn-g btn-s' id='ePrev'>Refresh Preview</button></div></div>" +
+    "<div><iframe id='eFrame' style='width:100%;height:600px;border:1px solid var(--bd);border-radius:16px;background:#fff'></iframe></div>" +
+    "</div>",
+    "<script>var fr=document.getElementById('eFrame');" +
+    "function build(){var h=document.getElementById('eHtml').value;var c=document.getElementById('eCss').value;var j=document.getElementById('eJs').value;" +
+    "fr.srcdoc=h+'<style>'+c+'</style>'+'<scr'+'ipt>'+j+'</scr'+'ipt>';}" +
+    "document.getElementById('ePrev').addEventListener('click',build);build();" +
+    "document.getElementById('eSave').addEventListener('click',function(){" +
+    "fetch('/api/sites/" + site.id + "/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html:document.getElementById('eHtml').value,css:document.getElementById('eCss').value,js:document.getElementById('eJs').value})})" +
+    ".then(function(r){return r.json();}).then(function(d){alert(d.ok?'Saved':'Failed');});});</script>",
+    req));
 });
 
 app.get("/dashboard", function (req, res) {
   const user = getLoggedUser(req);
-  if (!user && !isLoggedAdmin(req)) return res.redirect("/login");
+  if (!user && !isLoggedAdmin(req)) return res.redirect("/create");
+  const me = user || { id: "admin", username: "Super Admin", bio: "", avatar: "", plan: "vip" };
+  const db = getDB();
+  const msgs = (db.messages || []).filter(function (m) { return m.to === me.id; });
 
-  res.send(page("Dashboard", `
-    <h1>My Vault</h1>
-    <div class="row" style="margin-bottom:16px">
-      <a class="btn btn-primary btn-sm" href="/create">New Website</a>
-    </div>
-    <div id="vaultBox" class="grid"><div class="card"><p>Loading...</p></div></div>
-  `, `
-<script>
-function esc(v) {
-  return String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-function siteCard(s) {
-  return '<div class="card"><span class="badge">' + esc(s.category || 'Site') + '</span>' +
-    '<h3 style="margin-top:10px">' + esc(s.title) + '</h3>' +
-    '<p>/' + esc(s.slug) + ' - Views ' + (s.views || 0) + '</p>' +
-    '<div class="row">' +
-    '<a class="btn btn-primary btn-sm" target="_blank" href="/site/' + esc(s.slug) + '">Visit</a>' +
-    '<button class="btn btn-ghost btn-sm" onclick="cloneSite(\\'' + s.id + '\\')">Clone</button>' +
-    '<button class="btn btn-danger btn-sm" onclick="deleteSite(\\'' + s.id + '\\')">Delete</button>' +
-    '</div></div>';
-}
-function loadVault() {
-  fetch('/api/user/vault-data').then(function (r) { return r.json(); }).then(function (d) {
-    if (d.ok) {
-      document.getElementById('vaultBox').innerHTML = d.sites.length
-        ? d.sites.map(siteCard).join('')
-        : '<div class="card"><p>No websites yet.</p></div>';
-    }
-  });
-}
-function cloneSite(id) {
-  fetch('/api/sites/' + id + '/clone', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (d) {
-    if (d.ok) { alert('Cloned'); loadVault(); } else { alert(d.error || 'Failed'); }
-  });
-}
-function deleteSite(id) {
-  if (!confirm('Delete this website permanently?')) return;
-  fetch('/api/sites/' + id, { method: 'DELETE' }).then(function (r) { return r.json(); }).then(function (d) {
-    if (d.ok) { alert('Deleted'); loadVault(); } else { alert(d.error || 'Failed'); }
-  });
-}
-loadVault();
-</script>
-  `, req));
+  res.send(page("My Vault",
+    "<h1>My Project Vault</h1><p>Author: <strong style='color:#fff'>" + escapeHTML(me.username) + "</strong></p>" +
+    "<div class='tabs'>" +
+    "<div class='tab on' data-tab='pSites'>Websites</div>" +
+    "<div class='tab' data-tab='pStats'>Analytics</div>" +
+    "<div class='tab' data-tab='pProf'>Profile</div>" +
+    "<div class='tab' data-tab='pMsg'>Inbox (" + msgs.length + ")</div>" +
+    "<div class='tab' data-tab='pBill'>Billing</div>" +
+    "</div>" +
+    "<div id='pSites' class='pane on'><div class='row' style='margin-bottom:16px'><a class='btn btn-p btn-s' href='/create'>New Site</a>" +
+    "<button class='btn btn-g btn-s' data-bulk='delete'>Bulk Delete Selected</button></div><div id='vaultBox' class='grid g2'>Loading...</div></div>" +
+    "<div id='pStats' class='pane'><div id='statsBox' class='card'>Select a site to see analytics.</div><div id='statsDetail'></div></div>" +
+    "<div id='pProf' class='pane'><div class='card' style='max-width:560px'><h2>Edit Profile</h2>" +
+    (me.avatar ? "<img class='avatar' style='width:70px;height:70px' src='" + escapeHTML(me.avatar) + "'>" : "") +
+    "<input class='inp' id='prAv' placeholder='Avatar URL or dataURL'>" +
+    "<textarea class='inp' id='prBio' placeholder='Bio'>" + escapeHTML(me.bio || "") + "</textarea>" +
+    "<input class='inp' id='prColor' placeholder='Profile accent color e.g. #0a84ff' value='" + escapeHTML(me.accent || "") + "'>" +
+    "<div class='row'><button class='btn btn-p btn-s' id='prSave'>Save Profile</button>" +
+    "<button class='btn btn-g btn-s' id='prKey'>Generate API Key</button>" +
+    "<button class='btn btn-g btn-s' id='prSess'>Active Sessions</button>" +
+    "<button class='btn btn-d btn-s' id='prDel'>Delete Account</button></div>" +
+    "<p id='prKeyOut' style='margin-top:12px;color:var(--ok);word-break:break-all'></p></div></div>" +
+    "<div id='pMsg' class='pane'><div class='card'><h2>Inbox</h2><div id='msgBox'>" +
+    (msgs.map(function (m) { return "<p style='color:#fff'><strong>" + escapeHTML(m.fromName) + ":</strong> " + escapeHTML(m.text) + "</p>"; }).join("") || "<p>No messages.</p>") +
+    "</div><h3 style='margin-top:16px'>Send Message</h3><input class='inp' id='mgTo' placeholder='Recipient username'><textarea class='inp' id='mgTx' placeholder='Message'></textarea><button class='btn btn-p btn-s' id='mgSend'>Send</button></div></div>" +
+    "<div id='pBill' class='pane'><div class='card'><h2>Plans and Payments</h2>" +
+    "<p>Current plan: <span class='badge gold'>" + escapeHTML(me.plan || "free") + "</span></p>" +
+    "<p>Free: 10 sites - Pro: 50 sites - VIP: unlimited</p>" +
+    "<div class='grid g2'><input class='inp' id='payM' placeholder='bKash / Nagad'><input class='inp' id='payT' placeholder='TrxID'><select class='inp' id='payP'><option>pro</option><option>vip</option></select></div>" +
+    "<button class='btn btn-p btn-s' id='payReq'>Request Upgrade</button>" +
+    "<h3 style='margin-top:18px'>Redeem Coupon</h3><div class='row'><input class='inp' id='cpCode' placeholder='Coupon code' style='margin:0'><button class='btn btn-g btn-s' id='cpRed'>Redeem</button></div></div></div>",
+    "<script>" +
+    "document.addEventListener('click',function(e){var t=e.target.closest('[data-tab]');if(!t)return;" +
+    "var ps=document.querySelectorAll('.pane');for(var i=0;i<ps.length;i++)ps[i].classList.remove('on');" +
+    "var ts=document.querySelectorAll('.tab');for(var j=0;j<ts.length;j++)ts[j].classList.remove('on');" +
+    "document.getElementById(t.getAttribute('data-tab')).classList.add('on');t.classList.add('on');});" +
+    "function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}" +
+    "function loadVault(){fetch('/api/user/vault-data').then(function(r){return r.json();}).then(function(d){if(!d.ok)return;" +
+    "var box=document.getElementById('vaultBox');" +
+    "if(!d.sites.length){box.innerHTML='<div class=card><p>No sites yet.</p></div>';return;}" +
+    "box.innerHTML=d.sites.map(function(s){return '<div class=card><div class=row style=\\'justify-content:space-between\\'><span class=badge>'+esc(s.category||'Site')+'</span>" +
+    "<label style=\\'font-size:12px;color:var(--mut)\\'><input type=checkbox class=sel data-id='+s.id+'> select</label></div>" +
+    "<h3 style=\\'margin-top:10px\\'>'+esc(s.title)+(s.draft?' <span class=badge>Draft</span>':'')+(s.published?'':' <span class=badge dg>Unpublished</span>')+'</h3>" +
+    "<p>/'+esc(s.slug)+' - views '+(s.views||0)+' - likes '+((s.reactions||{}).like||0)+'</p>" +
+    "<div class=row><a class=\"btn btn-p btn-s\" target=_blank href=/site/'+esc(s.slug)+'>Visit</a>" +
+    "<a class=\"btn btn-g btn-s\" href=/edit/'+s.id+'>Edit</a>" +
+    "<button class=\"btn btn-g btn-s\" data-act=clone data-id='+s.id+'>Clone</button>" +
+    "<button class=\"btn btn-g btn-s\" data-act=stats data-id='+s.id+'>Stats</button>" +
+    "<button class=\"btn btn-g btn-s\" data-act=toggle data-id='+s.id+'>Publish Toggle</button>" +
+    "<button class=\"btn btn-d btn-s\" data-act=del data-id='+s.id+'>Delete</button></div></div>';}).join('');});}" +
+    "document.addEventListener('click',function(e){var b=e.target.closest('[data-act]');if(!b)return;var id=b.getAttribute('data-id');var a=b.getAttribute('data-act');" +
+    "if(a==='del'&&!confirm('Delete permanently?'))return;" +
+    "var url=a==='clone'?'/api/sites/'+id+'/clone':a==='del'?'/api/sites/'+id:a==='toggle'?'/api/sites/'+id+'/toggle':'/api/sites/'+id+'/rollback';" +
+    "var opt=a==='del'?{method:'DELETE'}:{method:'POST'};" +
+    "if(a==='stats'){showStats(id);return;}" +
+    "fetch(url,opt).then(function(r){return r.json();}).then(function(d){if(d.ok)loadVault();else alert(d.error||'Failed');});});" +
+    "function showStats(id){fetch('/api/sites/'+id+'/stats').then(function(r){return r.json();}).then(function(d){if(!d.ok)return;" +
+    "var s=d.stats;var days=Object.keys(s.byDay||{}).sort().slice(-14);var mx=1;days.forEach(function(k){if(s.byDay[k]>mx)mx=s.byDay[k];});" +
+    "document.getElementById('statsDetail').innerHTML='<div class=card><h2>'+esc(s.title)+'</h2>" +
+    "<div class=\"grid g4\"><div class=stat><b>'+(s.views||0)+'</b><span>Views</span></div><div class=stat><b>'+(s.uniqueViews||0)+'</b><span>Unique</span></div>" +
+    "<div class=stat><b>'+Math.round((s.totalSeconds||0)/60)+'</b><span>Minutes</span></div><div class=stat><b>'+((s.ratingCount||0)?(s.ratingSum/s.ratingCount).toFixed(1):'0')+'</b><span>Rating</span></div></div>" +
+    "<div class=bars>'+days.map(function(k){return '<div style=height:'+Math.max(4,(s.byDay[k]/mx)*100)+'% title='+k+':'+s.byDay[k]+'></div>';}).join('')+'</div>" +
+    "<p>Devices: '+JSON.stringify(s.devices||{})+'</p><p>Referrers: '+JSON.stringify(s.refs||{})+'</p>" +
+    "<a class=\"btn btn-g btn-s\" href=/api/sites/'+id+'/stats.csv>Export CSV</a></div>';});}" +
+    "document.querySelector('[data-bulk]').addEventListener('click',function(){var ids=[];var cs=document.querySelectorAll('.sel:checked');for(var i=0;i<cs.length;i++)ids.push(cs[i].getAttribute('data-id'));if(!ids.length)return alert('Select sites');if(!confirm('Delete selected?'))return;" +
+    "fetch('/api/sites/bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:ids,action:'delete'})}).then(function(){loadVault();});});" +
+    "document.getElementById('prSave').addEventListener('click',function(){fetch('/api/profile/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({avatar:document.getElementById('prAv').value,bio:document.getElementById('prBio').value,accent:document.getElementById('prColor').value})}).then(function(r){return r.json();}).then(function(d){alert(d.ok?'Saved':d.error);});});" +
+    "document.getElementById('prKey').addEventListener('click',function(){fetch('/api/profile/apikey',{method:'POST'}).then(function(r){return r.json();}).then(function(d){document.getElementById('prKeyOut').textContent='API Key: '+d.key;});});" +
+    "document.getElementById('prSess').addEventListener('click',function(){fetch('/api/auth/sessions').then(function(r){return r.json();}).then(function(d){alert('Active sessions: '+d.count);});});" +
+    "document.getElementById('prDel').addEventListener('click',function(){if(confirm('Delete account? 7 day grace period.'))fetch('/api/profile/delete',{method:'POST'}).then(function(){location.href='/';});});" +
+    "document.getElementById('mgSend').addEventListener('click',function(){fetch('/api/messages/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:document.getElementById('mgTo').value,text:document.getElementById('mgTx').value})}).then(function(r){return r.json();}).then(function(d){alert(d.ok?'Sent':d.error);});});" +
+    "document.getElementById('payReq').addEventListener('click',function(){fetch('/api/payments/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({method:document.getElementById('payM').value,trxId:document.getElementById('payT').value,plan:document.getElementById('payP').value})}).then(function(r){return r.json();}).then(function(d){alert(d.ok?'Request submitted':d.error);});});" +
+    "document.getElementById('cpRed').addEventListener('click',function(){fetch('/api/coupons/redeem',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:document.getElementById('cpCode').value})}).then(function(r){return r.json();}).then(function(d){alert(d.ok?'Coupon applied':d.error);if(d.ok)location.reload();});});" +
+    "loadVault();" +
+    "</script>",
+    req));
+});
+
+app.get("/u/:username", function (req, res) {
+  const db = getDB();
+  const u = (db.users || []).find(function (x) { return x.username.toLowerCase() === req.params.username.toLowerCase(); });
+  if (!u) return res.status(404).send("User not found");
+  const sites = (db.sites || []).filter(function (s) { return s.userId === u.id && s.published; });
+  const totalViews = sites.reduce(function (a, s) { return a + (s.views || 0); }, 0);
+  const followers = (db.users || []).filter(function (x) { return (x.following || []).indexOf(u.id) !== -1; }).length;
+  const me = getLoggedUser(req);
+  const acc = u.accent || "#0a84ff";
+
+  res.send(page(u.username,
+    "<div class='card' style='text-align:center'>" +
+    (u.avatar ? "<img class='avatar' style='width:90px;height:90px;margin-bottom:12px' src='" + escapeHTML(u.avatar) + "'>" : "") +
+    "<h1 style='margin-bottom:6px'>" + escapeHTML(u.username) + " " + (u.verified ? "<span class='badge ok'>Verified</span>" : "") + (u.plan === "vip" ? "<span class='badge gold'>VIP</span>" : "") + "</h1>" +
+    "<p>" + escapeHTML(u.bio || "No bio yet.") + "</p>" +
+    "<p style='font-size:13px'>" + sites.length + " sites - " + totalViews + " views - " + followers + " followers</p>" +
+    "<img src='https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=" + encodeURIComponent("/u/" + u.username) + "' style='margin-top:10px;border-radius:12px' alt='qr'>" +
+    "<div class='row' style='justify-content:center;margin-top:14px'>" +
+    (me && me.id !== u.id ? "<button class='btn btn-p btn-s' id='followBtn'>Follow</button>" : "") +
+    "</div></div>" +
+    "<div class='grid g2'>" +
+    sites.map(function (s) {
+      return "<div class='card'><span class='badge' style='background:" + acc + "22;color:" + acc + "'>" + escapeHTML(s.category || "Site") + "</span>" +
+        "<h3 style='margin-top:10px'>" + escapeHTML(s.title) + "</h3><p>" + (s.views || 0) + " views</p>" +
+        "<a class='btn btn-p btn-s' target='_blank' href='/site/" + escapeHTML(s.slug) + "'>Visit</a></div>";
+    }).join("") || "<div class='card'><p>No public sites.</p></div>" +
+    "</div>",
+    me && me.id !== u.id ? "<script>document.getElementById('followBtn').addEventListener('click',function(){fetch('/api/users/" + u.id + "/follow',{method:'POST'}).then(function(r){return r.json();}).then(function(d){alert(d.ok?(d.following?'Following':'Unfollowed'):'Failed');});});</script>" : "",
+    req));
 });
 
 app.get("/posts", function (req, res) {
   const db = getDB();
-  res.send(page("Posts", `
-    <h1>Posts and Guides</h1>
-    <div class="grid">
-      ${(db.posts || []).map(function (p) {
-        return '<div class="card"><span class="badge">' + escapeHTML(p.folder || "General") + '</span>' +
-          '<h3 style="margin-top:10px">' + escapeHTML(p.title) + '</h3>' +
-          '<p>' + escapeHTML((p.bio || p.content || "").slice(0, 120)) + '</p>' +
-          '<div class="row"><a class="btn btn-primary btn-sm" href="/post/' + escapeHTML(p.slug) + '">Read</a>' +
-          '<span style="font-size:13px;color:var(--muted);align-self:center">Views ' + (p.views || 0) + ' | Likes ' + (p.likes || 0) + '</span></div></div>';
-      }).join("") || '<div class="card"><p>No posts published yet.</p></div>'}
-    </div>
-  `, "", req));
+  const folders = db.folders || ["General"];
+  const posts = db.posts || [];
+  res.send(page("Posts",
+    "<h1>Posts and Guides</h1>" +
+    "<div class='tabs'><div class='tab on' data-f='ALL'>All</div>" + folders.map(function (f) { return "<div class='tab' data-f='" + escapeHTML(f) + "'>" + escapeHTML(f) + "</div>"; }).join("") + "</div>" +
+    "<div id='postList' class='grid g2'>" +
+    posts.map(function (p) {
+      return "<div class='card pf' data-folder='" + escapeHTML(p.folder || "General") + "'>" +
+        (p.pinned ? "<span class='badge gold'>Pinned</span> " : "") + "<span class='badge'>" + escapeHTML(p.folder || "General") + "</span>" +
+        "<h3 style='margin-top:10px'>" + escapeHTML(p.title) + "</h3><p>" + escapeHTML((p.bio || (p.content || "").slice(0, 100))) + "</p>" +
+        "<div class='row'><a class='btn btn-p btn-s' href='/post/" + escapeHTML(p.slug) + "'>Read Article</a>" +
+        "<span style='font-size:12px;color:var(--mut);align-self:center'>" + (p.likes || 0) + " likes - " + (p.comments || []).length + " comments</span></div></div>";
+    }).join("") || "<div class='card'><p>No posts yet.</p></div>" +
+    "</div>" +
+    "<div class='card'><h3>Newsletter</h3><div class='row'><input class='inp' id='nlMail' placeholder='Your email' style='margin:0'><button class='btn btn-p btn-s' id='nlBtn'>Subscribe</button></div></div>",
+    "<script>document.addEventListener('click',function(e){var t=e.target.closest('[data-f]');if(!t)return;" +
+    "var ts=document.querySelectorAll('.tabs .tab');for(var i=0;i<ts.length;i++)ts[i].classList.remove('on');t.classList.add('on');" +
+    "var f=t.getAttribute('data-f');var cs=document.querySelectorAll('.pf');for(var j=0;j<cs.length;j++){cs[j].style.display=(f==='ALL'||cs[j].getAttribute('data-folder')===f)?'':'none';}});" +
+    "document.getElementById('nlBtn').addEventListener('click',function(){fetch('/api/newsletter',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:document.getElementById('nlMail').value})}).then(function(r){return r.json();}).then(function(d){alert(d.ok?'Subscribed':d.error);});});</script>",
+    req));
 });
 
 app.get("/post/:slug", function (req, res) {
@@ -531,556 +704,638 @@ app.get("/post/:slug", function (req, res) {
   if (!post) return res.status(404).send("Post not found");
   post.views = (post.views || 0) + 1;
   saveDB(db);
-
-  res.send(page(post.title, `
-    <div class="card">
-      <span class="badge">${escapeHTML(post.folder || "General")}</span>
-      <h1 style="margin-top:12px">${escapeHTML(post.title)}</h1>
-      <p style="font-size:13px">By ${escapeHTML(post.author)} - Views ${post.views}</p>
-      <p style="white-space:pre-wrap;color:var(--text)">${escapeHTML(post.content || "")}</p>
-      <div class="row">
-        <button class="btn btn-ghost btn-sm" onclick="likePost()">Like (${post.likes || 0})</button>
-      </div>
-    </div>
-    <div class="card">
-      <h3>Comments (${(post.comments || []).length})</h3>
-      ${(post.comments || []).map(function (c) {
-        return '<div style="padding:12px 0;border-bottom:1px solid var(--border)"><b>' + escapeHTML(c.author) + '</b><p style="margin:6px 0 0">' + escapeHTML(c.text) + '</p></div>';
-      }).join("") || '<p>No comments yet.</p>'}
-      <form id="cForm" style="margin-top:16px">
-        <input class="input" id="cAuthor" placeholder="Your name" required>
-        <textarea class="input" id="cText" placeholder="Write comment" required style="min-height:90px"></textarea>
-        <button class="btn btn-primary btn-sm" type="submit">Post Comment</button>
-      </form>
-    </div>
-  `, `
-<script>
-function likePost() {
-  fetch('/api/posts/${post.id}/like', { method: 'POST' }).then(function () { location.reload(); });
-}
-document.getElementById('cForm').addEventListener('submit', function (e) {
-  e.preventDefault();
-  var payload = { author: document.getElementById('cAuthor').value, text: document.getElementById('cText').value };
-  fetch('/api/posts/${post.id}/comment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-    .then(function (r) { return r.json(); })
-    .then(function (d) { if (d.ok) location.reload(); else alert(d.error || 'Failed'); });
-});
-</script>
-  `, req));
+  res.send(page(post.title,
+    "<div class='card'><span class='badge'>" + escapeHTML(post.folder || "General") + "</span>" +
+    "<h1 style='margin-top:12px'>" + escapeHTML(post.title) + "</h1>" +
+    "<p style='font-size:13px'>By " + escapeHTML(post.author) + " - " + (post.views || 0) + " views</p>" +
+    "<div style='margin:18px 0;line-height:1.9;color:#e5e5ea'>" + mdLite(post.content || "") + "</div>" +
+    "<div class='row'><button class='btn btn-g btn-s' id='likeBtn'>Like (" + (post.likes || 0) + ")</button></div></div>" +
+    "<div class='card'><h3>Comments (" + (post.comments || []).length + ")</h3>" +
+    (post.comments || []).map(function (c) { return "<div style='padding:12px 0;border-bottom:1px solid var(--bd)'><strong>" + escapeHTML(c.author) + "</strong><p style='margin:6px 0 0'>" + escapeHTML(c.text) + "</p></div>"; }).join("") || "<p>No comments.</p>" +
+    "<div style='margin-top:16px'><input class='inp' id='cA' placeholder='Your name'><textarea class='inp' id='cT' placeholder='Comment'></textarea><button class='btn btn-p btn-s' id='cB'>Post Comment</button></div></div>",
+    "<script>document.getElementById('likeBtn').addEventListener('click',function(){fetch('/api/posts/" + post.id + "/like',{method:'POST'}).then(function(){location.reload();});});" +
+    "document.getElementById('cB').addEventListener('click',function(){fetch('/api/posts/" + post.id + "/comment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({author:document.getElementById('cA').value,text:document.getElementById('cT').value})}).then(function(){location.reload();});});</script>",
+    req));
 });
 
-/* ================= SITE SERVING ================= */
+app.get("/search", function (req, res) {
+  const q = String(req.query.q || "").toLowerCase();
+  const db = getDB();
+  let sites = [], posts = [];
+  if (q) {
+    sites = (db.sites || []).filter(function (s) { return s.published && (s.title + " " + s.bio + " " + (s.tags || []).join(" ")).toLowerCase().indexOf(q) !== -1; }).slice(0, 20);
+    posts = (db.posts || []).filter(function (p) { return (p.title + " " + p.content).toLowerCase().indexOf(q) !== -1; }).slice(0, 20);
+  }
+  res.send(page("Search",
+    "<h1>Search</h1><form method='GET' action='/search'><div class='row'><input class='inp' name='q' value='" + escapeHTML(q) + "' placeholder='Search sites, tags, posts' style='margin:0'><button class='btn btn-p'>Search</button></div></form>" +
+    (q ? "<h2 style='margin-top:24px'>Websites (" + sites.length + ")</h2><div class='grid g2'>" + sites.map(function (s) { return "<div class='card'><h3>" + escapeHTML(s.title) + "</h3><p>" + escapeHTML((s.bio || "").slice(0, 80)) + "</p><a class='btn btn-p btn-s' target='_blank' href='/site/" + escapeHTML(s.slug) + "'>Visit</a></div>"; }).join("") + "</div>" +
+      "<h2>Posts (" + posts.length + ")</h2><div class='grid g2'>" + posts.map(function (p) { return "<div class='card'><h3>" + escapeHTML(p.title) + "</h3><a class='btn btn-g btn-s' href='/post/" + escapeHTML(p.slug) + "'>Read</a></div>"; }).join("") + "</div>" : ""),
+    "", req));
+});
 
+/* ============ SITE SERVING (protections + analytics) ============ */
 app.get("/site/:slug", function (req, res) {
   const db = getDB();
-  const site = db.sites.find(function (s) { return s.slug === req.params.slug; });
-  if (!site || site.published === false) return res.status(404).send("Website not found");
+  const site = (db.sites || []).find(function (s) { return s.slug === req.params.slug; });
+  if (!site || site.published === false || site.draft) return res.status(404).send("Website not found or private.");
+
+  if (site.domainLock) {
+    const host = (req.get("host") || "").split(":")[0];
+    const allowed = [host === site.domainLock ? site.domainLock : null, (req.headers["x-forwarded-host"] || "").split(":")[0]].filter(Boolean);
+    if (allowed.indexOf(site.domainLock) === -1 && site.domainLock !== host) {
+      return res.status(403).send("Domain locked by author.");
+    }
+  }
+  if (site.expiresAt && new Date(site.expiresAt).getTime() < Date.now()) return res.status(403).send("This website has expired.");
+  if (site.viewLimit && (site.views || 0) >= site.viewLimit) return res.status(403).send("View limit reached.");
 
   if (site.sitePassword) {
     const entered = req.query.pass;
     if (!entered || hashPassword(entered) !== site.sitePassword) {
-      return res.send('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Locked</title></head>' +
-        '<body style="background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh">' +
-        '<form method="GET" style="background:#111;padding:32px;border-radius:16px;text-align:center">' +
-        '<h2>Password Protected</h2><p style="color:#999">This website is locked by its author.</p>' +
-        '<input name="pass" type="password" placeholder="Enter password" style="padding:12px;width:100%;margin:12px 0;background:#222;border:1px solid #333;color:#fff;border-radius:8px">' +
-        '<button style="padding:12px;width:100%;background:#3b82f6;border:none;color:#fff;border-radius:8px;font-weight:600">Unlock</button>' +
-        '</form></body></html>');
+      return res.send("<!DOCTYPE html><html><head><meta charset='utf-8'><title>Locked</title></head><body style='background:#000;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh'><form method='GET' style='background:#111;padding:34px;border-radius:18px;text-align:center'><h2>Password Protected</h2><p style='color:#999'>Locked by author</p><input name='pass' type='password' style='padding:12px;width:100%;margin:12px 0;background:#222;border:1px solid #333;color:#fff;border-radius:10px'><button style='padding:12px;width:100%;background:#0a84ff;border:none;color:#fff;border-radius:10px;font-weight:700'>Unlock</button></form></body></html>");
     }
   }
 
+  const uid = getCookie(req, "sv_uid");
+  const isNew = !uid;
+  if (isNew) res.cookie("sv_uid", genId(8), { maxAge: 365 * 86400000, path: "/" });
+  const seenKey = uid || "new";
+  site.seen = site.seen || {};
+  let unique = false;
+  if (!site.seen[seenKey] && Object.keys(site.seen).length < 8000) { site.seen[seenKey] = 1; unique = true; }
+
   site.views = (site.views || 0) + 1;
+  if (unique) site.uniqueViews = (site.uniqueViews || 0) + 1;
+  const day = new Date().toISOString().slice(0, 10);
+  site.byDay = site.byDay || {};
+  site.byDay[day] = (site.byDay[day] || 0) + 1;
+  site.devices = site.devices || {};
+  const dev = parseUA(req.headers["user-agent"]);
+  site.devices[dev] = (site.devices[dev] || 0) + 1;
+  const ref = req.headers.referer || "direct";
+  site.refs = site.refs || {};
+  const refHost = ref === "direct" ? "direct" : (function () { try { return new URL(ref).hostname; } catch (e) { return "direct"; } })();
+  site.refs[refHost] = (site.refs[refHost] || 0) + 1;
   saveDB(db);
+  liveMap.set(req.ip || "x", Date.now());
 
   let out = site.html || "";
-  if (site.rawCss) out = "<style>\n" + site.rawCss + "\n</style>\n" + out;
-  if (site.rawJs) out = out + "\n<script>\n" + site.rawJs + "\n</script>\n";
-  if (site.antiTheft) out = out + ANTI_THEFT_SCRIPT;
+  const owner = (db.users || []).find(function (u) { return u.id === site.userId; });
+  const plan = (owner && owner.plan) || "free";
+  const head = [];
+  if (site.seoTitle) head.push("<title>" + escapeHTML(site.seoTitle) + "</title>");
+  if (site.seoDesc) head.push("<meta name='description' content='" + escapeHTML(site.seoDesc) + "'>");
+  if (site.seoImage) head.push("<meta property='og:image' content='" + escapeHTML(site.seoImage) + "'><meta property='og:title' content='" + escapeHTML(site.title) + "'>");
+  if (site.favicon) head.push("<link rel='icon' href='" + escapeHTML(site.favicon) + "'>");
+  if (head.length) {
+    const block = head.join("\n");
+    if (out.indexOf("<head>") !== -1) out = out.replace("<head>", "<head>\n" + block);
+    else out = block + "\n" + out;
+  }
+  if (db.settings.watermarkFree && plan === "free") {
+    out += "<div style='position:fixed;bottom:10px;right:10px;background:rgba(0,0,0,.7);color:#fff;font:12px sans-serif;padding:6px 10px;border-radius:8px;z-index:99999'>Hosted on " + escapeHTML(db.settings.siteName) + "</div>";
+  }
+  if (db.settings.adCode && plan === "free") out += db.settings.adCode;
+  if (site.antiTheft) out += ANTI_THEFT_SCRIPT;
+  out += "<script>setTimeout(function(){try{fetch('/api/site/" + site.id + "/beat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sec:Math.round((Date.now()-performance.timeOrigin)/1000)>600?600:Math.round((Date.now()-performance.timeOrigin)/1000)})});}catch(e){}},8000);</script>";
 
-  res.type("html").send(out);
+  if (site.obfuscate) {
+    const b64 = Buffer.from(out, "utf8").toString("base64");
+    out = "<!DOCTYPE html><html><head><meta charset='utf-8'></head><body><script>document.write(atob('" + b64 + "'));</script></body></html>";
+  }
+
+  siteCache.set(site.slug, out);
+  sendBody(req, res, 200, "text/html; charset=utf-8", out);
 });
 
 app.get("/site/:slug/download", function (req, res) {
   const db = getDB();
-  const site = db.sites.find(function (s) { return s.slug === req.params.slug; });
+  const site = (db.sites || []).find(function (s) { return s.slug === req.params.slug; });
   if (!site) return res.status(404).send("Not found");
-  res.setHeader("Content-Disposition", 'attachment; filename="' + site.slug + '.html"');
-  res.type("html").send(site.html || "");
+  res.setHeader("Content-Disposition", "attachment; filename=\"" + site.slug + ".html\"");
+  res.type("html").send(site.rawHtml || site.html || "");
 });
 
-app.get("/healthz", function (req, res) {
-  res.json({ ok: true, uptime: process.uptime() });
+app.get("/site/:slug/embed", function (req, res) {
+  res.type("html").send("<!DOCTYPE html><html><body style='margin:0'><iframe src='/site/" + escapeHTML(req.params.slug) + "' style='width:100%;height:100vh;border:0'></iframe></body></html>");
 });
 
-/* ================= USER APIs ================= */
-
-app.post("/api/auth/register", function (req, res) {
-  const username = String(req.body.username || "").trim();
-  const password = String(req.body.password || "");
-  if (username.length < 3) return res.status(400).json({ ok: false, error: "Username min 3 characters" });
-  if (password.length < 6) return res.status(400).json({ ok: false, error: "Password min 6 characters" });
-
+/* ============ PWA ============ */
+app.get("/manifest.webmanifest", function (req, res) {
+  res.type("application/manifest+json").send(JSON.stringify({ name: "SJEMAR OLED", short_name: "SJEMAR", start_url: "/", display: "standalone", background_color: "#000000", theme_color: "#000000", icons: [] }));
+});
+app.get("/sw.js", function (req, res) {
+  res.type("application/javascript").send("self.addEventListener('install',function(e){self.skipWaiting();});self.addEventListener('fetch',function(e){if(e.request.method!=='GET')return;e.respondWith(caches.open('sjemar-v1').then(function(c){return c.match(e.request).then(function(m){return m||fetch(e.request).then(function(n){c.put(e.request,n.clone());return n;});});}));});");
+});
+app.get("/rss.xml", function (req, res) {
   const db = getDB();
-  const exists = db.users.some(function (u) { return u.username.toLowerCase() === username.toLowerCase(); });
-  if (exists) return res.status(409).json({ ok: false, error: "Username already taken" });
-
-  db.users.push({
-    id: genId(),
-    username: username,
-    password: hashPassword(password),
-    role: "user",
-    banned: false,
-    createdAt: new Date().toISOString()
-  });
-  saveDB(db);
-  addLog("USER_REGISTER", "New user: " + username);
-  res.json({ ok: true });
+  const items = (db.posts || []).slice(0, 20).map(function (p) { return "<item><title>" + escapeHTML(p.title) + "</title><link>/post/" + escapeHTML(p.slug) + "</link><description>" + escapeHTML(p.bio || "") + "</description></item>"; }).join("");
+  res.type("application/rss+xml").send("<?xml version='1.0'?><rss version='2.0'><channel><title>SJEMAR</title>" + items + "</channel></rss>");
 });
+app.get("/healthz", function (req, res) { res.json({ ok: true, uptime: process.uptime(), mem: process.memoryUsage().heapUsed }); });
 
-app.post("/api/auth/login", function (req, res) {
-  const username = String(req.body.username || "").trim();
-  const password = String(req.body.password || "");
+/* ============ AUTH APIs ============ */
+app.post("/api/auth/quick-auth", function (req, res) {
   const db = getDB();
-  const user = db.users.find(function (u) { return u.username.toLowerCase() === username.toLowerCase(); });
+  if (!db.settings.registrationOpen && !db.users.length) return res.status(403).json({ ok: false, error: "Registration closed" });
+  const username = String(req.body.username || "").trim();
+  const password = String(req.body.password || "").trim();
+  const saveMe = Boolean(req.body.saveMe);
+  if (!username || !password) return res.status(400).json({ ok: false, error: "Username and password required" });
 
-  if (!user || user.password !== hashPassword(password)) {
-    return res.status(401).json({ ok: false, error: "Invalid username or password" });
+  let user = (db.users || []).find(function (u) { return u.username.toLowerCase() === username.toLowerCase(); });
+  if (user) {
+    if (user.banned) return res.status(403).json({ ok: false, error: "Account suspended by admin" });
+    if (user.deletedAt) return res.status(403).json({ ok: false, error: "Account deleted" });
+    if (user.password !== hashPassword(password)) return res.status(401).json({ ok: false, error: "Incorrect password" });
+  } else {
+    user = { id: genId(), username: username, password: hashPassword(password), role: "user", plan: "free", banned: false, verified: false, following: [], bio: "", avatar: "", accent: "", createdAt: new Date().toISOString() };
+    db.users.push(user);
+    addLog("USER_REGISTER", "User registered: " + username + " ua=" + parseUA(req.headers["user-agent"]));
+    notify("New creator joined: " + username);
+    saveDB(db);
   }
-  if (user.banned) return res.status(403).json({ ok: false, error: "Account suspended by admin" });
-
-  const token = genId(24);
-  const remember = Boolean(req.body.remember);
-  userSessions.set(token, { userId: user.id, remember: remember, created: Date.now() });
-  res.cookie("sj_user_token", token, {
-    httpOnly: true,
-    path: "/",
-    sameSite: "lax",
-    maxAge: (remember ? 30 : 1) * 24 * 60 * 60 * 1000
-  });
-  res.json({ ok: true });
+  user.lastLogin = new Date().toISOString();
+  saveDB(db);
+  const tok = genId(24);
+  userSessions.set(tok, { userId: user.id, saveMe: saveMe, created: Date.now(), ua: parseUA(req.headers["user-agent"]) });
+  res.cookie("sj_user_token", tok, { httpOnly: true, sameSite: "lax", path: "/", maxAge: (saveMe ? 60 : 2) * 86400000 });
+  addLog("USER_LOGIN", username + " from " + parseUA(req.headers["user-agent"]));
+  res.json({ ok: true, user: { id: user.id, username: user.username } });
 });
 
 app.post("/api/auth/logout", function (req, res) {
-  const token = getCookie(req, "sj_user_token");
-  if (token) userSessions.delete(token);
+  const t = getCookie(req, "sj_user_token");
+  if (t) userSessions.delete(t);
   res.clearCookie("sj_user_token", { path: "/" });
   res.json({ ok: true });
+});
+app.get("/logout", function (req, res) {
+  const t = getCookie(req, "sj_user_token");
+  if (t) userSessions.delete(t);
+  res.clearCookie("sj_user_token", { path: "/" });
+  res.redirect("/");
+});
+app.get("/api/auth/me", function (req, res) {
+  const u = getLoggedUser(req);
+  if (u) return res.json({ ok: true, user: { id: u.id, username: u.username, role: u.role, plan: u.plan } });
+  if (isLoggedAdmin(req)) return res.json({ ok: true, user: { id: "admin", username: "Super Admin", role: "admin", plan: "vip" } });
+  res.json({ ok: false });
+});
+app.get("/api/auth/sessions", requireUser, function (req, res) {
+  let count = 0;
+  userSessions.forEach(function (s) { if (s.userId === req.user.id) count++; });
+  res.json({ ok: true, count: count });
+});
+app.post("/api/auth/logout-all", requireUser, function (req, res) {
+  userSessions.forEach(function (s, k) { if (s.userId === req.user.id) userSessions.delete(k); });
+  res.clearCookie("sj_user_token", { path: "/" });
+  res.json({ ok: true });
+});
+
+/* ============ PROFILE APIs ============ */
+app.post("/api/profile/update", requireUser, function (req, res) {
+  const db = getDB();
+  const u = (db.users || []).find(function (x) { return x.id === req.user.id; });
+  if (!u) return res.status(404).json({ ok: false });
+  if (req.body.avatar !== undefined) u.avatar = String(req.body.avatar).slice(0, 400000);
+  if (req.body.bio !== undefined) u.bio = String(req.body.bio).slice(0, 500);
+  if (req.body.accent !== undefined) u.accent = String(req.body.accent).slice(0, 20);
+  saveDB(db);
+  res.json({ ok: true });
+});
+app.post("/api/profile/apikey", requireUser, function (req, res) {
+  const db = getDB();
+  const u = (db.users || []).find(function (x) { return x.id === req.user.id; });
+  u.apiKey = "sjk_" + genId(16);
+  saveDB(db);
+  res.json({ ok: true, key: u.apiKey });
+});
+app.post("/api/profile/delete", requireUser, function (req, res) {
+  const db = getDB();
+  const u = (db.users || []).find(function (x) { return x.id === req.user.id; });
+  u.deletedAt = new Date().toISOString();
+  saveDB(db);
+  addLog("USER_DELETE_REQUEST", u.username);
+  res.json({ ok: true });
+});
+
+/* ============ PUBLISH + SITES APIs ============ */
+app.post("/api/publish", requireUser, function (req, res) {
+  const b = req.body || {};
+  if (!b.title || !b.html) return res.status(400).json({ ok: false, error: "Title and HTML required" });
+  const db = getDB();
+  const plan = req.user.plan || "free";
+  const mine = (db.sites || []).filter(function (s) { return s.userId === req.user.id; }).length;
+  const limits = { free: 10, pro: 50, vip: 5000 };
+  if (mine >= (limits[plan] || 10)) return res.status(403).json({ ok: false, error: "Plan limit reached. Upgrade your plan." });
+
+  let slug = slugify(b.slug || b.title);
+  if (!slug) slug = "site-" + genId(4);
+  if ((db.sites || []).some(function (s) { return s.slug === slug; })) return res.status(409).json({ ok: false, error: "Slug already taken" });
+
+  let fullHtml = b.html;
+  if (b.css && b.css.trim()) fullHtml = "<style>\n" + b.css + "\n</style>\n" + fullHtml;
+  if (b.js && b.js.trim()) fullHtml = fullHtml + "\n<script>\n" + b.js + "\n</script>\n";
+
+  const site = {
+    id: genId(), userId: req.user.id, authorName: req.user.username,
+    title: String(b.title).slice(0, 120), slug: slug, bio: b.bio || "",
+    category: b.category || "General", tags: String(b.tags || "").split(",").map(function (t) { return t.trim(); }).filter(Boolean),
+    collection: b.collection || "", rawHtml: b.html, rawCss: b.css || "", rawJs: b.js || "",
+    seoTitle: b.seoTitle || "", seoDesc: b.seoDesc || "", seoImage: b.seoImage || "", favicon: b.favicon || "",
+    scheduledAt: b.scheduledAt || null, expiresAt: b.expiresAt || null,
+    viewLimit: Number(b.viewLimit || 0), domainLock: b.domainLock || "",
+    antiTheft: b.antiTheft !== false, obfuscate: Boolean(b.obfuscate), allowClone: b.allowClone !== false,
+    draft: Boolean(b.draft) || Boolean(b.scheduledAt), published: !b.draft && !b.scheduledAt,
+    sitePassword: b.sitePassword ? hashPassword(b.sitePassword) : null,
+    html: fullHtml, views: 0, uniqueViews: 0, totalSeconds: 0, reactions: {}, ratingSum: 0, ratingCount: 0,
+    comments: [], versions: [], seen: {}, byDay: {}, devices: {}, refs: {},
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  db.sites.unshift(site);
+  saveDB(db);
+  addLog("SITE_PUBLISH", site.title + " by " + req.user.username);
+  webhookSend("New site published: " + site.title);
+  const proto = req.headers["x-forwarded-proto"] || req.protocol;
+  res.json({ ok: true, site: { url: proto + "://" + req.get("host") + "/site/" + site.slug } });
 });
 
 app.get("/api/check-slug", function (req, res) {
   const slug = slugify(req.query.slug);
   const db = getDB();
-  const taken = db.sites.some(function (s) { return s.slug === slug; });
-  res.json({ ok: true, available: !taken && slug.length >= 2 });
-});
-
-app.post("/api/publish", requireUser, function (req, res) {
-  const b = req.body || {};
-  if (!b.title || !b.html) return res.status(400).json({ ok: false, error: "Title and HTML required" });
-
-  const db = getDB();
-  let slug = slugify(b.slug || b.title);
-  if (!slug) slug = "site-" + genId(4);
-  if (db.sites.some(function (s) { return s.slug === slug; })) {
-    return res.status(409).json({ ok: false, error: "Slug already taken" });
-  }
-
-  const site = {
-    id: genId(),
-    userId: req.user.id,
-    authorName: req.user.username,
-    title: String(b.title).slice(0, 120),
-    slug: slug,
-    bio: b.bio || "",
-    category: b.category || "General",
-    rawHtml: b.html,
-    rawCss: b.css || "",
-    rawJs: b.js || "",
-    html: b.html,
-    antiTheft: b.antiTheft !== false,
-    sitePassword: b.sitePassword ? hashPassword(b.sitePassword) : null,
-    published: true,
-    views: 0,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-
-  db.sites.unshift(site);
-  saveDB(db);
-  addLog("SITE_PUBLISH", site.title + " by " + req.user.username);
-
-  const proto = req.headers["x-forwarded-proto"] || req.protocol;
-  res.json({ ok: true, site: { url: proto + "://" + req.get("host") + "/site/" + site.slug } });
+  res.json({ ok: true, available: !(db.sites || []).some(function (s) { return s.slug === slug; }) && slug.length >= 2 });
 });
 
 app.get("/api/user/vault-data", requireUser, function (req, res) {
   const db = getDB();
-  const mine = db.sites.filter(function (s) {
-    return s.userId === req.user.id || req.user.role === "admin";
-  });
+  const mine = (db.sites || []).filter(function (s) { return s.userId === req.user.id || req.user.role === "admin"; });
   res.json({ ok: true, sites: mine });
+});
+
+app.post("/api/sites/:id/update", requireUser, function (req, res) {
+  const db = getDB();
+  const s = (db.sites || []).find(function (x) { return x.id === req.params.id; });
+  if (!s || (s.userId !== req.user.id && req.user.role !== "admin")) return res.status(403).json({ ok: false });
+  s.versions = s.versions || [];
+  s.versions.unshift({ ts: new Date().toISOString(), rawHtml: s.rawHtml, rawCss: s.rawCss, rawJs: s.rawJs });
+  if (s.versions.length > 5) s.versions = s.versions.slice(0, 5);
+  s.rawHtml = req.body.html || s.rawHtml;
+  s.rawCss = req.body.css !== undefined ? req.body.css : s.rawCss;
+  s.rawJs = req.body.js !== undefined ? req.body.js : s.rawJs;
+  let full = s.rawHtml;
+  if (s.rawCss) full = "<style>\n" + s.rawCss + "\n</style>\n" + full;
+  if (s.rawJs) full = full + "\n<script>\n" + s.rawJs + "\n</script>\n";
+  s.html = full;
+  s.updatedAt = new Date().toISOString();
+  siteCache.delete(s.slug);
+  saveDB(db);
+  res.json({ ok: true });
+});
+
+app.post("/api/sites/:id/rollback", requireUser, function (req, res) {
+  const db = getDB();
+  const s = (db.sites || []).find(function (x) { return x.id === req.params.id; });
+  if (!s || (s.userId !== req.user.id && req.user.role !== "admin")) return res.status(403).json({ ok: false });
+  const v = (s.versions || [])[Number(req.body.index || 0)];
+  if (!v) return res.status(404).json({ ok: false, error: "Version not found" });
+  s.rawHtml = v.rawHtml; s.rawCss = v.rawCss; s.rawJs = v.rawJs;
+  let full = s.rawHtml;
+  if (s.rawCss) full = "<style>\n" + s.rawCss + "\n</style>\n" + full;
+  if (s.rawJs) full = full + "\n<script>\n" + s.rawJs + "\n</script>\n";
+  s.html = full; siteCache.delete(s.slug); saveDB(db);
+  res.json({ ok: true });
 });
 
 app.post("/api/sites/:id/clone", requireUser, function (req, res) {
   const db = getDB();
-  const site = db.sites.find(function (s) { return s.id === req.params.id; });
-  if (!site) return res.status(404).json({ ok: false, error: "Site not found" });
-  if (site.userId !== req.user.id && req.user.role !== "admin") {
-    return res.status(403).json({ ok: false, error: "Access denied" });
-  }
-  const copy = Object.assign({}, site, {
-    id: genId(),
-    title: site.title + " (Copy)",
-    slug: site.slug + "-copy-" + genId(3),
-    views: 0,
-    createdAt: new Date().toISOString()
-  });
+  const s = (db.sites || []).find(function (x) { return x.id === req.params.id; });
+  if (!s) return res.status(404).json({ ok: false });
+  if (s.userId !== req.user.id && req.user.role !== "admin" && !s.allowClone) return res.status(403).json({ ok: false });
+  const copy = Object.assign({}, s, { id: genId(), userId: req.user.id, authorName: req.user.username, title: s.title + " (Copy)", slug: s.slug + "-copy-" + genId(3), views: 0, uniqueViews: 0, reactions: {}, comments: [], seen: {}, byDay: {}, devices: {}, refs: {}, draft: true, published: false, createdAt: new Date().toISOString() });
   db.sites.unshift(copy);
   saveDB(db);
   res.json({ ok: true });
 });
 
+app.post("/api/sites/:id/toggle", requireUser, function (req, res) {
+  const db = getDB();
+  const s = (db.sites || []).find(function (x) { return x.id === req.params.id; });
+  if (!s || (s.userId !== req.user.id && req.user.role !== "admin")) return res.status(403).json({ ok: false });
+  s.published = !s.published; s.draft = false;
+  siteCache.delete(s.slug); saveDB(db);
+  res.json({ ok: true });
+});
+
 app.delete("/api/sites/:id", requireUser, function (req, res) {
   const db = getDB();
-  const site = db.sites.find(function (s) { return s.id === req.params.id; });
-  if (!site) return res.status(404).json({ ok: false, error: "Site not found" });
-  if (site.userId !== req.user.id && req.user.role !== "admin") {
-    return res.status(403).json({ ok: false, error: "Access denied" });
+  const s = (db.sites || []).find(function (x) { return x.id === req.params.id; });
+  if (!s || (s.userId !== req.user.id && req.user.role !== "admin")) return res.status(403).json({ ok: false });
+  db.sites = db.sites.filter(function (x) { return x.id !== req.params.id; });
+  siteCache.delete(s.slug); saveDB(db);
+  addLog("SITE_DELETE", s.title);
+  res.json({ ok: true });
+});
+
+app.post("/api/sites/bulk", requireUser, function (req, res) {
+  const db = getDB();
+  const ids = req.body.ids || [];
+  if (req.body.action === "delete") {
+    db.sites = (db.sites || []).filter(function (s) { return !(ids.indexOf(s.id) !== -1 && (s.userId === req.user.id || req.user.role === "admin")); });
   }
-  db.sites = db.sites.filter(function (s) { return s.id !== req.params.id; });
   saveDB(db);
-  addLog("SITE_DELETE", site.title);
+  res.json({ ok: true });
+});
+
+app.get("/api/sites/:id/stats", requireUser, function (req, res) {
+  const db = getDB();
+  const s = (db.sites || []).find(function (x) { return x.id === req.params.id; });
+  if (!s || (s.userId !== req.user.id && req.user.role !== "admin")) return res.status(403).json({ ok: false });
+  res.json({ ok: true, stats: s });
+});
+app.get("/api/sites/:id/stats.csv", requireUser, function (req, res) {
+  const db = getDB();
+  const s = (db.sites || []).find(function (x) { return x.id === req.params.id; });
+  if (!s || (s.userId !== req.user.id && req.user.role !== "admin")) return res.status(403).send("denied");
+  let csv = "day,views\n";
+  Object.keys(s.byDay || {}).forEach(function (k) { csv += k + "," + s.byDay[k] + "\n"; });
+  res.type("text/csv").send(csv);
+});
+
+app.post("/api/site/:id/react", function (req, res) {
+  const db = getDB();
+  const s = (db.sites || []).find(function (x) { return x.id === req.params.id; });
+  if (!s) return res.status(404).json({ ok: false });
+  s.reactions = s.reactions || {};
+  const t = req.body.type || "like";
+  s.reactions[t] = (s.reactions[t] || 0) + 1;
+  saveDB(db);
+  res.json({ ok: true });
+});
+app.post("/api/site/:id/rate", function (req, res) {
+  const db = getDB();
+  const s = (db.sites || []).find(function (x) { return x.id === req.params.id; });
+  if (!s) return res.status(404).json({ ok: false });
+  const st = Math.min(5, Math.max(1, Number(req.body.stars || 5)));
+  s.ratingSum = (s.ratingSum || 0) + st; s.ratingCount = (s.ratingCount || 0) + 1;
+  saveDB(db);
+  res.json({ ok: true });
+});
+app.post("/api/site/:id/beat", function (req, res) {
+  const db = getDB();
+  const s = (db.sites || []).find(function (x) { return x.id === req.params.id; });
+  if (s) { s.totalSeconds = (s.totalSeconds || 0) + Math.min(600, Number(req.body.sec || 0)); saveDB(db); }
+  res.json({ ok: true });
+});
+app.post("/api/site/:id/comment", function (req, res) {
+  const db = getDB();
+  const s = (db.sites || []).find(function (x) { return x.id === req.params.id; });
+  if (!s) return res.status(404).json({ ok: false });
+  s.comments = s.comments || [];
+  s.comments.push({ id: genId(6), author: String(req.body.author || "Anonymous").slice(0, 40), text: String(req.body.text || "").slice(0, 800), parentId: req.body.parentId || null, date: new Date().toISOString() });
+  saveDB(db);
+  res.json({ ok: true });
+});
+app.post("/api/site/:id/report", function (req, res) {
+  const db = getDB();
+  db.reports = db.reports || [];
+  db.reports.unshift({ id: genId(6), siteId: req.params.id, reason: String(req.body.reason || "").slice(0, 300), status: "open", date: new Date().toISOString() });
+  saveDB(db);
+  res.json({ ok: true });
+});
+
+app.post("/api/users/:id/follow", requireUser, function (req, res) {
+  const db = getDB();
+  const me = (db.users || []).find(function (x) { return x.id === req.user.id; });
+  me.following = me.following || [];
+  const i = me.following.indexOf(req.params.id);
+  if (i === -1) me.following.push(req.params.id); else me.following.splice(i, 1);
+  saveDB(db);
+  res.json({ ok: true, following: i === -1 });
+});
+
+app.post("/api/messages/send", requireUser, function (req, res) {
+  const db = getDB();
+  const to = (db.users || []).find(function (u) { return u.username.toLowerCase() === String(req.body.to || "").toLowerCase(); });
+  if (!to) return res.status(404).json({ ok: false, error: "User not found" });
+  db.messages = db.messages || [];
+  db.messages.unshift({ id: genId(6), from: req.user.id, fromName: req.user.username, to: to.id, text: String(req.body.text || "").slice(0, 800), date: new Date().toISOString() });
+  saveDB(db);
+  res.json({ ok: true });
+});
+
+app.post("/api/templates/:id/use", requireUser, function (req, res) {
+  const db = getDB();
+  const t = (db.templates || []).find(function (x) { return x.id === req.params.id; });
+  if (!t) return res.status(404).json({ ok: false });
+  t.uses = (t.uses || 0) + 1;
+  db.sites.unshift({ id: genId(), userId: req.user.id, authorName: req.user.username, title: t.title + " Draft", slug: slugify(t.title) + "-" + genId(3), bio: t.desc, category: t.category, tags: [], collection: "", rawHtml: t.html, rawCss: t.css, rawJs: t.js, html: t.html, antiTheft: true, obfuscate: false, allowClone: true, draft: true, published: false, sitePassword: null, views: 0, uniqueViews: 0, totalSeconds: 0, reactions: {}, ratingSum: 0, ratingCount: 0, comments: [], versions: [], seen: {}, byDay: {}, devices: {}, refs: {}, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  saveDB(db);
+  res.json({ ok: true });
+});
+
+app.post("/api/newsletter", function (req, res) {
+  const email = String(req.body.email || "").trim();
+  if (!/^[^@]+@[^@]+\.[^@]+$/.test(email)) return res.status(400).json({ ok: false, error: "Invalid email" });
+  const db = getDB();
+  db.newsletter = db.newsletter || [];
+  if (db.newsletter.indexOf(email) === -1) db.newsletter.push(email);
+  saveDB(db);
+  res.json({ ok: true });
+});
+
+app.post("/api/payments/request", requireUser, function (req, res) {
+  const db = getDB();
+  db.payments = db.payments || [];
+  db.payments.unshift({ id: genId(6), userId: req.user.id, username: req.user.username, method: String(req.body.method || ""), trxId: String(req.body.trxId || ""), plan: req.body.plan === "vip" ? "vip" : "pro", status: "pending", date: new Date().toISOString() });
+  saveDB(db);
+  addLog("PAYMENT_REQUEST", req.user.username + " " + req.body.plan);
+  res.json({ ok: true });
+});
+
+app.post("/api/coupons/redeem", requireUser, function (req, res) {
+  const db = getDB();
+  const c = (db.coupons || []).find(function (x) { return x.code === String(req.body.code || "").toUpperCase(); });
+  if (!c) return res.status(404).json({ ok: false, error: "Invalid coupon" });
+  c.used = c.used || [];
+  if (c.used.indexOf(req.user.id) !== -1) return res.status(409).json({ ok: false, error: "Already used" });
+  c.used.push(req.user.id);
+  const u = (db.users || []).find(function (x) { return x.id === req.user.id; });
+  u.plan = c.plan; u.planExpires = new Date(Date.now() + c.days * 86400000).toISOString();
+  saveDB(db);
   res.json({ ok: true });
 });
 
 app.post("/api/posts/:id/like", function (req, res) {
   const db = getDB();
-  const post = (db.posts || []).find(function (p) { return p.id === req.params.id; });
-  if (!post) return res.status(404).json({ ok: false });
-  post.likes = (post.likes || 0) + 1;
-  saveDB(db);
-  res.json({ ok: true, likes: post.likes });
+  const p = (db.posts || []).find(function (x) { return x.id === req.params.id; });
+  if (!p) return res.status(404).json({ ok: false });
+  p.likes = (p.likes || 0) + 1; saveDB(db);
+  res.json({ ok: true });
 });
-
 app.post("/api/posts/:id/comment", function (req, res) {
   const db = getDB();
-  const post = (db.posts || []).find(function (p) { return p.id === req.params.id; });
-  if (!post) return res.status(404).json({ ok: false });
-  post.comments = post.comments || [];
-  post.comments.push({
-    id: genId(6),
-    author: String(req.body.author || "Anonymous").slice(0, 40),
-    text: String(req.body.text || "").slice(0, 1000),
-    date: new Date().toISOString()
-  });
+  const p = (db.posts || []).find(function (x) { return x.id === req.params.id; });
+  if (!p) return res.status(404).json({ ok: false });
+  p.comments = p.comments || [];
+  p.comments.push({ id: genId(6), author: String(req.body.author || "Anonymous").slice(0, 40), text: String(req.body.text || "").slice(0, 800), date: new Date().toISOString() });
   saveDB(db);
   res.json({ ok: true });
 });
 
-/* ================= ADMIN PANEL (EMBEDDED) ================= */
-
-const ADMIN_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Admin Panel</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}
-.wrap{max-width:1200px;margin:0 auto;padding:20px}
-.card{background:rgba(18,18,22,.95);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:20px;margin-bottom:16px}
-h1{font-size:26px;margin-bottom:14px}
-h2{font-size:18px;margin-bottom:12px}
-.btn{padding:10px 18px;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px}
-.btn-p{background:#3b82f6;color:#fff}
-.btn-g{background:rgba(255,255,255,.07);color:#fff;border:1px solid rgba(255,255,255,.1)}
-.btn-d{background:rgba(239,68,68,.12);color:#ef4444;border:1px solid rgba(239,68,68,.25)}
-.btn-s{padding:6px 12px;font-size:12px}
-.input{width:100%;padding:11px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#fff;margin-bottom:10px;font-size:14px}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}
-.stat{background:rgba(18,18,22,.95);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:14px;text-align:center}
-.stat b{display:block;font-size:24px;color:#3b82f6}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{padding:9px;border-bottom:1px solid rgba(255,255,255,.08);text-align:left}
-.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
-.tab{padding:9px 16px;border-radius:8px;background:rgba(255,255,255,.06);cursor:pointer;font-size:14px}
-.tab.on{background:#3b82f6}
-.pane{display:none}.pane.on{display:block}
-.row{display:flex;gap:8px;flex-wrap:wrap}
-</style>
-</head>
-<body>
-<div class="wrap">
-  <div id="lockBox" class="card" style="max-width:400px;margin:60px auto">
-    <h1>Admin Login</h1>
-    <input class="input" id="aPass" type="password" placeholder="Admin password">
-    <button class="btn btn-p" style="width:100%" onclick="adminLogin()">Unlock Panel</button>
-  </div>
-
-  <div id="panelBox" style="display:none">
-    <div class="card row" style="justify-content:space-between;align-items:center">
-      <h1 style="margin:0">Admin Control Panel</h1>
-      <div class="row">
-        <a href="/" style="color:#9ca3af;font-size:14px">View Site</a>
-        <button class="btn btn-g btn-s" onclick="location.reload()">Lock</button>
-      </div>
-    </div>
-
-    <div class="stats">
-      <div class="stat"><b id="sUsers">0</b><span>Users</span></div>
-      <div class="stat"><b id="sSites">0</b><span>Sites</span></div>
-      <div class="stat"><b id="sPosts">0</b><span>Posts</span></div>
-      <div class="stat"><b id="sViews">0</b><span>Views</span></div>
-    </div>
-
-    <div class="tabs">
-      <div class="tab on" onclick="tab('tUsers',this)">Users</div>
-      <div class="tab" onclick="tab('tSites',this)">Websites</div>
-      <div class="tab" onclick="tab('tPost',this)">New Post</div>
-      <div class="tab" onclick="tab('tSet',this)">Settings</div>
-      <div class="tab" onclick="tab('tLogs',this)">Logs</div>
-    </div>
-
-    <div id="tUsers" class="pane on"><div class="card"><h2>User Management</h2><div id="userTable">Loading...</div></div></div>
-    <div id="tSites" class="pane"><div class="card"><h2>Website Management</h2><div id="siteTable">Loading...</div></div></div>
-
-    <div id="tPost" class="pane"><div class="card">
-      <h2>Create Folder Post</h2>
-      <input class="input" id="npFolder" placeholder="Folder (e.g. Updates)">
-      <input class="input" id="npTitle" placeholder="Post title">
-      <input class="input" id="npBio" placeholder="Short bio">
-      <textarea class="input" id="npContent" placeholder="Full content" style="min-height:120px"></textarea>
-      <button class="btn btn-p" onclick="createPost()">Publish Post</button>
-    </div></div>
-
-    <div id="tSet" class="pane"><div class="card">
-      <h2>System Settings</h2>
-      <input class="input" id="setName" placeholder="Site brand name">
-      <input class="input" id="setAnn" placeholder="Announcement message">
-      <label style="display:flex;gap:8px;align-items:center;font-size:14px;margin-bottom:8px">
-        <input type="checkbox" id="setAnnOn" style="width:16px;height:16px"> Show announcement
-      </label>
-      <label style="display:flex;gap:8px;align-items:center;font-size:14px;margin-bottom:14px">
-        <input type="checkbox" id="setMaint" style="width:16px;height:16px"> Maintenance mode
-      </label>
-      <div class="row">
-        <button class="btn btn-p" onclick="saveSettings()">Save Settings</button>
-        <button class="btn btn-g" onclick="window.location.href='/api/admin/backup'">Download Backup</button>
-      </div>
-    </div></div>
-
-    <div id="tLogs" class="pane"><div class="card"><h2>Audit Logs</h2><div id="logTable">Loading...</div></div></div>
-  </div>
-</div>
-
-<script>
-var DATA = null;
-function tab(id, el) {
-  var panes = document.querySelectorAll('.pane');
-  for (var i = 0; i < panes.length; i++) panes[i].classList.remove('on');
-  var tabs = document.querySelectorAll('.tab');
-  for (var j = 0; j < tabs.length; j++) tabs[j].classList.remove('on');
-  document.getElementById(id).classList.add('on');
-  el.classList.add('on');
-}
-function esc(v) {
-  return String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-function adminLogin() {
-  fetch('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('aPass').value }) })
-    .then(function (r) { return r.json(); })
-    .then(function (d) {
-      if (d.ok) { document.getElementById('lockBox').style.display = 'none'; document.getElementById('panelBox').style.display = 'block'; loadAll(); }
-      else alert('Wrong password');
-    });
-}
-function loadAll() {
-  fetch('/api/admin/all').then(function (r) { return r.json(); }).then(function (d) {
-    if (!d.ok) return;
-    DATA = d;
-    var views = 0;
-    for (var i = 0; i < d.sites.length; i++) views += (d.sites[i].views || 0);
-    document.getElementById('sUsers').textContent = d.users.length;
-    document.getElementById('sSites').textContent = d.sites.length;
-    document.getElementById('sPosts').textContent = d.posts.length;
-    document.getElementById('sViews').textContent = views;
-    document.getElementById('setName').value = d.settings.siteName || '';
-    document.getElementById('setAnn').value = d.settings.announcement || '';
-    document.getElementById('setAnnOn').checked = !!d.settings.announcementActive;
-    document.getElementById('setMaint').checked = !!d.settings.maintenanceMode;
-
-    var uh = '<table><tr><th>User</th><th>Status</th><th>Actions</th></tr>';
-    for (var a = 0; a < d.users.length; a++) {
-      var u = d.users[a];
-      uh += '<tr><td>' + esc(u.username) + '</td><td>' + (u.banned ? 'Banned' : 'Active') + '</td><td class="row">' +
-        '<button class="btn btn-g btn-s" onclick="banUser(\\'' + u.id + '\\')">' + (u.banned ? 'Unban' : 'Ban') + '</button>' +
-        '<button class="btn btn-d btn-s" onclick="delUser(\\'' + u.id + '\\')">Delete</button></td></tr>';
-    }
-    document.getElementById('userTable').innerHTML = uh + '</table>';
-
-    var sh = '<table><tr><th>Title</th><th>Author</th><th>Views</th><th>Actions</th></tr>';
-    for (var b = 0; b < d.sites.length; b++) {
-      var s = d.sites[b];
-      sh += '<tr><td>' + esc(s.title) + '</td><td>' + esc(s.authorName) + '</td><td>' + (s.views || 0) + '</td><td class="row">' +
-        '<a class="btn btn-g btn-s" target="_blank" href="/site/' + esc(s.slug) + '">View</a>' +
-        '<button class="btn btn-d btn-s" onclick="delSite(\\'' + s.id + '\\')">Delete</button></td></tr>';
-    }
-    document.getElementById('siteTable').innerHTML = sh + '</table>';
-
-    var lh = '<table><tr><th>Time</th><th>Action</th><th>Details</th></tr>';
-    for (var c = 0; c < (d.logs || []).length; c++) {
-      var L = d.logs[c];
-      lh += '<tr><td>' + esc(L.timestamp) + '</td><td>' + esc(L.action) + '</td><td>' + esc(L.details) + '</td></tr>';
-    }
-    document.getElementById('logTable').innerHTML = lh + '</table>';
-  });
-}
-function banUser(id) { fetch('/api/admin/user/' + id + '/ban', { method: 'POST' }).then(function () { loadAll(); }); }
-function delUser(id) { if (confirm('Delete user and all sites?')) fetch('/api/admin/user/' + id, { method: 'DELETE' }).then(function () { loadAll(); }); }
-function delSite(id) { if (confirm('Delete site?')) fetch('/api/admin/sites/' + id, { method: 'DELETE' }).then(function () { loadAll(); }); }
-function createPost() {
-  var payload = {
-    folder: document.getElementById('npFolder').value,
-    title: document.getElementById('npTitle').value,
-    bio: document.getElementById('npBio').value,
-    content: document.getElementById('npContent').value
-  };
-  fetch('/api/admin/folder-post', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-    .then(function (r) { return r.json(); })
-    .then(function (d) { if (d.ok) { alert('Post published'); loadAll(); } else alert(d.error || 'Failed'); });
-}
-function saveSettings() {
-  var payload = {
-    siteName: document.getElementById('setName').value,
-    announcement: document.getElementById('setAnn').value,
-    announcementActive: document.getElementById('setAnnOn').checked,
-    maintenanceMode: document.getElementById('setMaint').checked
-  };
-  fetch('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-    .then(function (r) { return r.json(); })
-    .then(function (d) { if (d.ok) alert('Settings saved'); else alert('Failed'); });
-}
-fetch('/api/admin/ping').then(function (r) { return r.json(); }).then(function (d) {
-  if (d.ok) { document.getElementById('lockBox').style.display = 'none'; document.getElementById('panelBox').style.display = 'block'; loadAll(); }
-});
-</script>
-</body>
-</html>`;
-
-app.get("/admin", function (req, res) { res.type("html").send(ADMIN_HTML); });
-app.get("/admin.html", function (req, res) { res.type("html").send(ADMIN_HTML); });
-
-/* ================= ADMIN APIs ================= */
-
-app.get("/api/admin/ping", function (req, res) {
-  res.json({ ok: isLoggedAdmin(req) });
+/* ============ ADMIN ============ */
+app.get(["/admin", "/admin.html"], function (req, res) {
+  const p = path.join(__dirname, "admin.html");
+  if (fs.existsSync(p)) return res.type("html").send(fs.readFileSync(p, "utf8"));
+  res.type("html").send("<h1>admin.html missing</h1><p>Upload admin.html next to server.js</p>");
 });
 
-app.post("/api/admin/login", function (req, res) {
-  if (req.body.password !== ADMIN_PASS) {
-    return res.status(401).json({ ok: false, error: "Wrong password" });
-  }
-  const token = genId(24);
-  adminSessions.set(token, true);
-  res.cookie("sj_admin_token", token, { httpOnly: true, path: "/", sameSite: "lax", maxAge: 24 * 60 * 60 * 1000 });
+app.post("/api/admin/auth", function (req, res) {
+  if (req.body.password !== ADMIN_PASS && req.body.password !== ADMIN_PIN) return res.status(401).json({ ok: false });
+  const tok = genId(24);
+  adminSessions.set(tok, true);
+  res.cookie("sj_admin_token", tok, { httpOnly: true, sameSite: "lax", path: "/", maxAge: 86400000 });
   addLog("ADMIN_LOGIN", "Admin logged in");
   res.json({ ok: true });
 });
+app.get("/api/admin/ping", function (req, res) { res.json({ ok: isLoggedAdmin(req) }); });
 
 app.get("/api/admin/all", requireAdmin, function (req, res) {
   const db = getDB();
-  res.json({
-    ok: true,
-    users: db.users.map(function (u) {
-      return { id: u.id, username: u.username, banned: u.banned, createdAt: u.createdAt };
-    }),
-    sites: db.sites,
-    posts: db.posts,
-    folders: db.folders,
-    settings: db.settings,
-    logs: db.logs
-  });
+  res.json({ ok: true, users: db.users, sites: db.sites, posts: db.posts, folders: db.folders, settings: db.settings, logs: db.logs, reports: db.reports || [], payments: db.payments || [], coupons: db.coupons || [], newsletter: db.newsletter || [], templates: db.templates || [], notifications: db.notifications || [], backups: (db.backups || []).map(function (b) { return { ts: b.ts }; }) });
 });
-
+app.get("/api/admin/health", requireAdmin, function (req, res) {
+  res.json({ ok: true, uptime: process.uptime(), mem: process.memoryUsage(), node: process.version });
+});
 app.post("/api/admin/settings", requireAdmin, function (req, res) {
   const db = getDB();
   db.settings = Object.assign({}, db.settings, req.body);
-  saveDB(db);
-  addLog("SETTINGS_UPDATE", "Settings changed");
+  saveDB(db); addLog("SETTINGS_UPDATE", "Settings updated");
   res.json({ ok: true });
 });
-
-app.get("/api/admin/backup", requireAdmin, function (req, res) {
+app.get("/api/admin/backup-download", requireAdmin, function (req, res) {
   const db = getDB();
-  res.setHeader("Content-Disposition", 'attachment; filename="backup-' + Date.now() + '.json"');
+  res.setHeader("Content-Disposition", "attachment; filename=\"sjemar-backup-" + Date.now() + ".json\"");
   res.type("json").send(JSON.stringify(db, null, 2));
 });
-
+app.post("/api/admin/restore", requireAdmin, function (req, res) {
+  const db = getDB();
+  const b = (db.backups || [])[Number(req.body.index || 0)];
+  if (!b) return res.status(404).json({ ok: false });
+  fs.writeFileSync(DATA_FILE, b.data, "utf8");
+  addLog("BACKUP_RESTORE", "Restored snapshot " + b.ts);
+  res.json({ ok: true });
+});
+app.post("/api/admin/db-save", requireAdmin, function (req, res) {
+  try {
+    const parsed = JSON.parse(req.body.json);
+    saveDB(parsed);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ ok: false, error: "Invalid JSON" }); }
+});
 app.post("/api/admin/user/:id/ban", requireAdmin, function (req, res) {
   const db = getDB();
-  const user = db.users.find(function (u) { return u.id === req.params.id; });
-  if (!user) return res.status(404).json({ ok: false });
-  user.banned = !user.banned;
-  saveDB(db);
-  addLog("USER_BAN", user.username + " banned=" + user.banned);
+  const u = (db.users || []).find(function (x) { return x.id === req.params.id; });
+  if (!u) return res.status(404).json({ ok: false });
+  u.banned = !u.banned; saveDB(db);
+  addLog("USER_BAN_TOGGLE", u.username + " banned=" + u.banned);
   res.json({ ok: true });
 });
-
+app.post("/api/admin/user/:id/verify", requireAdmin, function (req, res) {
+  const db = getDB();
+  const u = (db.users || []).find(function (x) { return x.id === req.params.id; });
+  if (!u) return res.status(404).json({ ok: false });
+  u.verified = !u.verified; saveDB(db);
+  res.json({ ok: true });
+});
+app.post("/api/admin/user/:id/plan", requireAdmin, function (req, res) {
+  const db = getDB();
+  const u = (db.users || []).find(function (x) { return x.id === req.params.id; });
+  if (!u) return res.status(404).json({ ok: false });
+  u.plan = req.body.plan || "free"; saveDB(db);
+  res.json({ ok: true });
+});
 app.delete("/api/admin/user/:id", requireAdmin, function (req, res) {
   const db = getDB();
-  db.users = db.users.filter(function (u) { return u.id !== req.params.id; });
-  db.sites = db.sites.filter(function (s) { return s.userId !== req.params.id; });
-  saveDB(db);
-  addLog("USER_DELETE", req.params.id);
+  db.users = (db.users || []).filter(function (u) { return u.id !== req.params.id; });
+  db.sites = (db.sites || []).filter(function (s) { return s.userId !== req.params.id; });
+  saveDB(db); addLog("USER_DELETE", req.params.id);
   res.json({ ok: true });
 });
-
 app.delete("/api/admin/sites/:id", requireAdmin, function (req, res) {
   const db = getDB();
-  db.sites = db.sites.filter(function (s) { return s.id !== req.params.id; });
-  saveDB(db);
-  addLog("ADMIN_SITE_DELETE", req.params.id);
+  db.sites = (db.sites || []).filter(function (s) { return s.id !== req.params.id; });
+  saveDB(db); addLog("ADMIN_SITE_DELETE", req.params.id);
   res.json({ ok: true });
 });
-
 app.post("/api/admin/folder-post", requireAdmin, function (req, res) {
   const b = req.body || {};
   if (!b.title) return res.status(400).json({ ok: false, error: "Title required" });
   const db = getDB();
-  const folder = String(b.folder || "General").trim();
-  if (db.folders.indexOf(folder) === -1) db.folders.push(folder);
-  db.posts.unshift({
-    id: genId(),
-    folder: folder,
-    title: String(b.title).slice(0, 120),
-    slug: slugify(b.title) || "post-" + genId(4),
-    bio: b.bio || "",
-    content: b.content || "",
-    author: "Admin",
-    views: 0,
-    likes: 0,
-    pinned: false,
-    comments: [],
-    createdAt: new Date().toISOString()
-  });
-  saveDB(db);
-  addLog("ADMIN_POST", b.title);
+  if (b.folder && db.folders.indexOf(b.folder) === -1) db.folders.push(b.folder);
+  db.posts.unshift({ id: genId(), folder: b.folder || "General", title: String(b.title).slice(0, 120), slug: slugify(b.title) || "post-" + genId(4), bio: b.bio || "", content: b.content || "", author: "Admin", views: 0, likes: 0, pinned: Boolean(b.pinned), comments: [], createdAt: new Date().toISOString() });
+  saveDB(db); addLog("ADMIN_POST_CREATE", b.title);
   res.json({ ok: true });
 });
+app.delete("/api/admin/posts/:id", requireAdmin, function (req, res) {
+  const db = getDB();
+  db.posts = (db.posts || []).filter(function (p) { return p.id !== req.params.id; });
+  saveDB(db);
+  res.json({ ok: true });
+});
+app.post("/api/admin/reports/:id/resolve", requireAdmin, function (req, res) {
+  const db = getDB();
+  const r = (db.reports || []).find(function (x) { return x.id === req.params.id; });
+  if (!r) return res.status(404).json({ ok: false });
+  r.status = "resolved";
+  if (req.body.takedown) db.sites = (db.sites || []).filter(function (s) { return s.id !== r.siteId; });
+  saveDB(db);
+  res.json({ ok: true });
+});
+app.post("/api/admin/payments/:id/approve", requireAdmin, function (req, res) {
+  const db = getDB();
+  const p = (db.payments || []).find(function (x) { return x.id === req.params.id; });
+  if (!p) return res.status(404).json({ ok: false });
+  p.status = "approved";
+  const u = (db.users || []).find(function (x) { return x.id === p.userId; });
+  if (u) { u.plan = p.plan; u.planExpires = new Date(Date.now() + 30 * 86400000).toISOString(); }
+  saveDB(db); addLog("PAYMENT_APPROVED", p.username + " -> " + p.plan);
+  res.json({ ok: true });
+});
+app.post("/api/admin/coupons", requireAdmin, function (req, res) {
+  const db = getDB();
+  db.coupons = db.coupons || [];
+  db.coupons.push({ code: String(req.body.code || "").toUpperCase(), plan: req.body.plan === "vip" ? "vip" : "pro", days: Number(req.body.days || 30), used: [] });
+  saveDB(db);
+  res.json({ ok: true });
+});
+app.post("/api/admin/assign", requireAdmin, function (req, res) {
+  const db = getDB();
+  const u = (db.users || []).find(function (x) { return x.id === req.body.userId; });
+  if (!u) return res.status(404).json({ ok: false, error: "User not found" });
+  db.sites.unshift({ id: genId(), userId: u.id, authorName: u.username, title: req.body.title || "Assigned Site", slug: slugify(req.body.slug || req.body.title) || "assigned-" + genId(4), bio: "Assigned by administrator", category: "General", tags: [], collection: "", rawHtml: req.body.html || "", rawCss: "", rawJs: "", html: req.body.html || "<h1>Assigned</h1>", antiTheft: true, obfuscate: false, allowClone: false, draft: false, published: true, sitePassword: null, views: 0, uniqueViews: 0, totalSeconds: 0, reactions: {}, ratingSum: 0, ratingCount: 0, comments: [], versions: [], seen: {}, byDay: {}, devices: {}, refs: {}, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  saveDB(db); addLog("ADMIN_SITE_ASSIGN", req.body.title + " -> " + u.username);
+  res.json({ ok: true });
+});
+app.get("/api/admin/logs", requireAdmin, function (req, res) {
+  const db = getDB();
+  let logs = db.logs || [];
+  if (req.query.action) logs = logs.filter(function (l) { return l.action.indexOf(req.query.action) !== -1; });
+  if (req.query.q) logs = logs.filter(function (l) { return (l.action + l.details).toLowerCase().indexOf(String(req.query.q).toLowerCase()) !== -1; });
+  res.json({ ok: true, logs: logs.slice(0, 200) });
+});
 
-/* ================= 404 + START ================= */
-
+/* ============ 404 ============ */
 app.use(function (req, res) {
-  res.status(404).send(page("404", `
-    <div class="card" style="text-align:center;padding:50px 20px">
-      <h1>404</h1>
-      <p>The page you requested does not exist.</p>
-      <div class="row" style="justify-content:center"><a class="btn btn-primary" href="/">Return Home</a></div>
-    </div>
-  `, "", req));
+  const db = getDB();
+  if (db.settings.custom404) return res.status(404).type("html").send(db.settings.custom404);
+  res.status(404).send(page("404", "<div class='card' style='text-align:center;padding:60px 20px'><h1>404</h1><p>The requested page does not exist.</p><a class='btn btn-p' href='/'>Return Home</a></div>", "", req));
 });
 
 app.listen(PORT, "0.0.0.0", function () {
-  console.log("SJEMAR PLATFORM STARTED ON PORT " + PORT);
+  console.log("=================================================");
+  console.log("SJEMAR OLED ULTIMATE ENGINE v6.0 ONLINE");
+  console.log("Port: " + PORT);
+  console.log("Admin pass: " + ADMIN_PASS + " | PIN: " + ADMIN_PIN);
+  console.log("=================================================");
 });
