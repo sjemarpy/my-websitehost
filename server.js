@@ -1,743 +1,641 @@
-/**
- * ============================================================================
- * SJEMAR NEXT-GEN OLED ENGINE v3.0 (AI + FIREBASE EDITION)
- * Complete Node.js Backend with OpenRouter AI Integration
- * iOS OLED Dark Glass Blur UI + 3D SVG Elements
- * ============================================================================
- */
-
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const https = require("https");
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-const PORT = Number(process.env.PORT) || 3000;
-const ADMIN_PASS = process.env.ADMIN_PASS || "py.py.php";
-const ADMIN_PIN = "5768";
-const SPECIAL_VIP_ID = "899987";
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true }));
 
-// OpenRouter Free API
-const OPENROUTER_API_KEY = "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";
-const AI_MODEL = "deepseek/deepseek-chat-v3-0324:free";
-
-const DATA_DIR = path.join(__dirname, "data");
-const DATA_FILE = path.join(DATA_DIR, "database.json");
-
-app.disable("x-powered-by");
-app.set("trust proxy", 1);
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
-
-/* =========================================================
-   DATABASE ENGINE
-========================================================= */
-
-const initialDB = {
-  settings: {
-    siteName: "SJEMAR OLED",
-    maintenanceMode: false,
-    announcement: "⚡ Welcome to SJEMAR Next-Gen AI Engine. Free AI HTML Generator Active!",
-    announcementActive: true,
-    globalHeaderCode: "",
-    globalFooterCode: "",
-    defaultAntiTheft: true
-  },
+// ডাটাবেস
+const DB_FILE = path.join(__dirname, "db.json");
+let db = {
   users: [],
   sites: [],
-  folders: ["General", "Updates", "Guides", "VIP Codes", "Tools", "APKs"],
-  posts: [
-    {
-      id: "p1",
-      folder: "Updates",
-      title: "SJEMAR v3.0 - AI HTML Generator Released",
-      slug: "sjemar-v3-ai-release",
-      bio: "Free AI-powered website generator with OpenRouter integration.",
-      content: "Welcome to SJEMAR v3.0! Now you can generate complete websites using AI. Just describe your project and get full HTML/CSS/JS code instantly.",
-      author: "Admin",
-      views: 0,
-      likes: 0,
-      pinned: true,
-      comments: [],
-      createdAt: new Date().toISOString()
-    }
-  ],
-  versions: [
-    { id: "v1", title: "Version 3.0", subtitle: "AI HTML Generator + Firebase Auth", link: "#" },
-    { id: "v2", title: "Version 2.0", subtitle: "OLED Anti-Theft Engine", link: "#" }
-  ],
-  resources: [
-    { id: "r1", section: "AI", ribbon: "FREE", badge: "AI Generator", title: "AI Website Maker", icon: "ai", slug: "create" },
-    { id: "r2", section: "RESOURCE", ribbon: "FREE", badge: "100% Free", title: "Free Website", icon: "triangle", slug: "create" },
-    { id: "r3", section: "APK", ribbon: "APK", badge: "Android Build", title: "APK Builder", icon: "valorant", slug: "create" }
-  ],
-  logs: []
+  posts: [],
+  logs: [],
+  settings: { siteName: "SJEMAR OLED", announcement: "✨ Welcome! AI Generator Active" }
 };
 
-function initDB() {
-  try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    if (!fs.existsSync(DATA_FILE)) {
-      fs.writeFileSync(DATA_FILE, JSON.stringify(initialDB, null, 2), "utf8");
-    }
-  } catch (err) {
-    console.error("Database Init Error:", err);
-  }
-}
+try { if (fs.existsSync(DB_FILE)) db = JSON.parse(fs.readFileSync(DB_FILE)); } catch(e) {}
 
-function getDB() {
-  try {
-    initDB();
-    if (fs.existsSync(DATA_FILE)) {
-      const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-      return { ...initialDB, ...data, settings: { ...initialDB.settings, ...(data.settings || {}) } };
-    }
-  } catch (err) {
-    console.error("Database Read Error:", err);
-  }
-  return { ...initialDB };
-}
+function save() { fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)); }
+function genId() { return crypto.randomBytes(6).toString("hex"); }
+function esc(t) { return String(t||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
-function saveDB(db) {
-  try {
-    initDB();
-    fs.writeFileSync(DATA_FILE, JSON.stringify(db || initialDB, null, 2), "utf8");
-  } catch (err) {
-    console.error("Database Save Error:", err);
-  }
-}
+// সেশন
+const sessions = new Map();
 
-function addLog(action, details = "") {
-  try {
-    const db = getDB();
-    db.logs = db.logs || [];
-    db.logs.unshift({ id: genId(6), action, details, timestamp: new Date().toISOString() });
-    if (db.logs.length > 200) db.logs = db.logs.slice(0, 200);
-    saveDB(db);
-  } catch {}
-}
-
-initDB();
-
-/* =========================================================
-   SECURITY & SESSIONS
-========================================================= */
-
-function genId(len = 10) { return crypto.randomBytes(len).toString("hex"); }
-function hashPassword(pass) { return crypto.createHash("sha256").update(String(pass) + "SJEMAR_ULTIMATE_2026").digest("hex"); }
-function slugify(text) {
-  return String(text || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
-}
-function escapeHTML(text) {
-  return String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
-}
-
-const userSessions = new Map();
-const adminSessions = new Map();
-
-function getCookie(req, name) {
-  const cookies = req.headers.cookie || "";
-  for (const part of cookies.split(";")) {
-    const item = part.trim();
-    if (item.startsWith(name + "=")) return decodeURIComponent(item.substring(name.length + 1));
-  }
-  return null;
-}
-
-function getLoggedUser(req) {
-  const token = getCookie(req, "sj_user_token");
-  if (!token) return null;
-  const sess = userSessions.get(token);
-  if (!sess) return null;
-  if (Date.now() - sess.created > 60 * 24 * 60 * 60 * 1000) { userSessions.delete(token); return null; }
-  const db = getDB();
-  const user = db.users.find((u) => u.id === sess.userId);
-  if (user && user.banned) return null;
-  return user || null;
-}
-
-function isLoggedAdmin(req) {
-  const token = getCookie(req, "sj_admin_token");
-  if (!token) return false;
-  return adminSessions.has(token);
-}
-
-function requireAdmin(req, res, next) {
-  if (!isLoggedAdmin(req)) return res.status(401).json({ ok: false, error: "Admin access required." });
-  next();
-}
-
-function requireUser(req, res, next) {
-  const user = getLoggedUser(req);
-  if (isLoggedAdmin(req)) { req.user = { id: "admin", username: "Super Admin", role: "admin" }; return next(); }
-  if (!user) return res.status(401).json({ ok: false, error: "Authentication required" });
-  req.user = user;
-  next();
-}
-
-app.use((req, res, next) => {
-  const db = getDB();
-  if (db.settings && db.settings.maintenanceMode) {
-    if (isLoggedAdmin(req) || req.path.startsWith("/admin") || req.path.startsWith("/api/admin")) return next();
-    return res.status(503).send(`<h1>⚙️ SYSTEM MAINTENANCE</h1><p>We are upgrading our servers.</p>`);
-  }
-  next();
-});
-
-const ANTI_THEFT_SCRIPT = `
-<script>
-  document.addEventListener('contextmenu', e => e.preventDefault());
-  document.onkeydown = function(e) {
-    if(e.keyCode == 123) return false;
-    if(e.ctrlKey && e.shiftKey && (e.keyCode == 'I'.charCodeAt(0) || e.keyCode == 'C'.charCodeAt(0) || e.keyCode == 'J'.charCodeAt(0))) return false;
-    if(e.ctrlKey && e.keyCode == 'U'.charCodeAt(0)) return false;
-  };
-</script>`;
-
-/* =========================================================
-   iOS OLED DARK GLASS BLUR UI ENGINE
-========================================================= */
-
-function page(title, content, script = "", req = { path: "" }) {
-  const db = getDB();
-  const ann = db.settings.announcementActive && db.settings.announcement;
-  const user = getLoggedUser(req);
-
+// মূল পেজ ফাংশন - ছোট কিন্তু শক্তিশালী
+function page(title, body, extra = "") {
+  const user = getUser();
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="bn">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>${escapeHTML(title)} | SJEMAR OLED</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg: #000000; --glass: rgba(28, 28, 30, 0.65); --glass-heavy: rgba(15, 15, 15, 0.85);
-      --glass-border: rgba(255, 255, 255, 0.08); --text: #ffffff; --text-secondary: #8e8e93;
-      --accent: #0a84ff; --accent-glow: rgba(10, 132, 255, 0.4); --danger: #ff453a; --success: #32d74b;
-      --blur: blur(40px) saturate(180%);
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: var(--bg); color: var(--text); font-family: 'Inter', -apple-system, sans-serif; min-height: 100vh; overflow-x: hidden; -webkit-font-smoothing: antialiased; }
-    body::before {
-      content: ''; position: fixed; top: -50%; left: -50%; width: 200%; height: 200%;
-      background: radial-gradient(circle at 15% 15%, rgba(10, 132, 255, 0.15), transparent 40%), radial-gradient(circle at 85% 85%, rgba(255, 55, 95, 0.08), transparent 40%), radial-gradient(circle at 50% 50%, rgba(94, 92, 230, 0.1), transparent 50%);
-      z-index: -1; animation: ambient 25s infinite alternate ease-in-out;
-    }
-    @keyframes ambient { 0% { transform: translate(0, 0) rotate(0deg); } 100% { transform: translate(-5%, -5%) rotate(15deg); } }
-    .ambient-3d { position: fixed; z-index: -1; opacity: 0.15; filter: blur(8px); animation: float3d 20s infinite alternate ease-in-out; pointer-events: none; }
-    .ambient-3d.tl { top: 10%; left: 10%; } .ambient-3d.br { bottom: 10%; right: 10%; animation-delay: -10s; }
-    .ambient-3d.center { top: 50%; left: 50%; transform: translate(-50%, -50%); animation-delay: -5s; opacity: 0.08; }
-    @keyframes float3d { 0% { transform: translateZ(0) rotateX(0) rotateY(0); } 100% { transform: translateZ(50px) rotateX(20deg) rotateY(20deg); } }
-    .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-    .nav-bar { position: sticky; top: 0; z-index: 100; background: var(--glass-heavy); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); border-bottom: 1px solid var(--glass-border); padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; }
-    .logo { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; display: flex; align-items: center; gap: 10px; }
-    .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, var(--accent), #5e5ce6); border-radius: 8px; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px var(--accent-glow); }
-    .nav-links { display: flex; gap: 24px; }
-    .nav-links a { color: var(--text-secondary); text-decoration: none; font-weight: 500; font-size: 15px; transition: color 0.2s; }
-    .nav-links a:hover, .nav-links a.active { color: var(--text); }
-    .glass { background: var(--glass); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur); border: 1px solid var(--glass-border); border-radius: 24px; padding: 28px; box-shadow: 0 12px 40px rgba(0,0,0,0.6); margin-bottom: 24px; }
-    .glass-input { width: 100%; padding: 16px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; color: var(--text); font-size: 16px; outline: none; transition: all 0.3s; font-family: inherit; }
-    .glass-input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-glow); background: rgba(255,255,255,0.08); }
-    textarea.glass-input { resize: vertical; min-height: 100px; }
-    .btn { padding: 14px 28px; border: none; border-radius: 14px; font-weight: 600; font-size: 16px; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none; }
-    .btn:active { transform: scale(0.96); }
-    .btn-primary { background: var(--accent); color: white; box-shadow: 0 6px 20px var(--accent-glow); }
-    .btn-glass { background: rgba(255,255,255,0.1); color: var(--text); border: 1px solid var(--glass-border); }
-    .btn-ai { background: linear-gradient(135deg, #bf5af2, #0a84ff); color: white; box-shadow: 0 6px 20px rgba(191, 90, 242, 0.4); }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    .grid { display: grid; gap: 20px; } .grid-3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); } .grid-2 { grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); }
-    h1 { font-size: 36px; font-weight: 800; letter-spacing: -1px; margin-bottom: 12px; } h2 { font-size: 28px; font-weight: 700; margin-bottom: 16px; } h3 { font-size: 20px; font-weight: 600; margin-bottom: 12px; }
-    p { color: var(--text-secondary); line-height: 1.6; font-size: 15px; }
-    .badge { display: inline-block; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; background: rgba(10, 132, 255, 0.15); color: var(--accent); border: 1px solid rgba(10, 132, 255, 0.3); }
-    .badge-vip { background: rgba(255, 215, 0, 0.2); color: gold; border: 1px solid gold; }
-    .profile-pic { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; border: 2px solid var(--glass-border); box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
-    .announce { background: linear-gradient(90deg, rgba(10,132,255,0.1), rgba(255,55,95,0.1)); border: 1px solid var(--glass-border); padding: 12px; text-align: center; border-radius: 16px; margin-bottom: 24px; font-size: 14px; font-weight: 500; }
-    ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
-    .ai-glow { position: relative; overflow: hidden; }
-    .ai-glow::before {
-      content: ''; position: absolute; top: -2px; left: -2px; right: -2px; bottom: -2px;
-      background: linear-gradient(45deg, #ff006e, #8338ec, #3a86ff, #ff006e);
-      background-size: 400%; border-radius: 26px; z-index: -1; animation: glow 3s linear infinite; opacity: 0.5;
-    }
-    @keyframes glow { 0% { background-position: 0% 0%; } 100% { background-position: 400% 0%; } }
-    .typing-indicator { display: inline-flex; gap: 4px; align-items: center; padding: 8px 16px; }
-    .typing-indicator span { width: 8px; height: 8px; background: var(--accent); border-radius: 50%; animation: typing 1.4s infinite; }
-    .typing-indicator span:nth-child(2) { animation-delay: 0.2s; } .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
-    @keyframes typing { 0%, 60%, 100% { opacity: 0.3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-6px); } }
-    .preview-frame { width: 100%; height: 500px; border: 1px solid var(--glass-border); border-radius: 14px; background: white; }
-    @media (max-width: 768px) { .nav-links { display: none; } h1 { font-size: 28px; } .glass { padding: 20px; border-radius: 20px; } }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>${esc(title)}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+:root{
+  --bg:#000;--card:rgba(20,20,25,.8);--border:rgba(255,255,255,.1);
+  --txt:#fff;--txt2:#999;--blue:#0a84ff;--purple:#bf5af2;--green:#32d74b
+}
+body{
+  background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  min-height:100vh;overflow-x:hidden;touch-action:manipulation;
+  -webkit-font-smoothing:antialiased
+}
+/* লাইভ ব্যাকগ্রাউন্ড - লাইটওয়েট */
+.bg{position:fixed;inset:0;z-index:-1;background:#000;overflow:hidden}
+.bg::before{
+  content:'';position:absolute;width:200vmax;height:200vmax;
+  background:conic-gradient(from 0deg,transparent,rgba(10,132,255,.15),transparent,rgba(191,90,242,.15),transparent);
+  animation:spin 30s linear infinite;
+  top:50%;left:50%;transform:translate(-50%,-50%)
+}
+.bg::after{
+  content:'';position:absolute;inset:0;
+  background:radial-gradient(circle at 30% 30%,rgba(10,132,255,.1) 0%,transparent 50%),
+             radial-gradient(circle at 70% 70%,rgba(191,90,242,.1) 0%,transparent 50%);
+  animation:pulse 8s ease-in-out infinite alternate
+}
+@keyframes spin{to{transform:translate(-50%,-50%) rotate(360deg)}}
+@keyframes pulse{0%{opacity:.5}100%{opacity:1}}
+
+/* গ্লাস কার্ড */
+.card{
+  background:var(--card);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid var(--border);border-radius:20px;padding:20px;margin:12px;
+  box-shadow:0 8px 32px rgba(0,0,0,.5);transition:transform .2s
+}
+.card:active{transform:scale(.98)}
+
+/* বাটন */
+.btn{
+  display:block;width:100%;padding:16px;border:none;border-radius:14px;
+  font-size:16px;font-weight:600;cursor:pointer;transition:all .2s;
+  background:linear-gradient(135deg,var(--blue),var(--purple));color:#fff;
+  text-align:center;text-decoration:none;margin:8px 0;
+  box-shadow:0 4px 20px rgba(10,132,255,.3)
+}
+.btn:active{transform:scale(.95);opacity:.9}
+.btn.secondary{background:rgba(255,255,255,.1);box-shadow:none}
+.btn.small{padding:10px 16px;font-size:14px;display:inline-block;width:auto}
+
+/* ইনপুট */
+.input{
+  width:100%;padding:16px;background:rgba(255,255,255,.05);
+  border:1px solid var(--border);border-radius:14px;color:var(--txt);
+  font-size:16px;margin:8px 0;outline:none;transition:all .2s
+}
+.input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(10,132,255,.2)}
+textarea.input{min-height:120px;resize:vertical}
+
+/* নেভিগেশন */
+.nav{
+  position:sticky;top:0;z-index:100;background:rgba(0,0,0,.8);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--border);padding:16px;
+  display:flex;justify-content:space-between;align-items:center
+}
+.nav .logo{font-size:20px;font-weight:800;background:linear-gradient(135deg,var(--blue),var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.nav .menu{display:flex;gap:12px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.nav .menu a{color:var(--txt2);text-decoration:none;font-size:14px;white-space:nowrap;padding:8px 12px;border-radius:10px}
+.nav .menu a.active{color:var(--txt);background:rgba(255,255,255,.1)}
+
+/* গ্রিড */
+.grid{display:grid;grid-template-columns:1fr;gap:12px;padding:12px}
+@media(min-width:600px){.grid{grid-template-columns:repeat(2,1fr)}}
+@media(min-width:900px){.grid{grid-template-columns:repeat(3,1fr)}}
+
+/* টাইটেল */
+h1{font-size:28px;font-weight:800;margin:8px 0;background:linear-gradient(135deg,#fff,#999);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+h2{font-size:22px;font-weight:700;margin:8px 0}
+h3{font-size:18px;font-weight:600;margin:8px 0}
+p{color:var(--txt2);line-height:1.6;margin:8px 0}
+.badge{
+  display:inline-block;padding:4px 12px;background:rgba(10,132,255,.2);
+  color:var(--blue);border-radius:20px;font-size:12px;font-weight:600
+}
+.badge.gold{background:rgba(255,215,0,.2);color:gold}
+
+/* লোডিং অ্যানিমেশন */
+.loading{display:flex;gap:6px;justify-content:center;padding:20px}
+.loading span{width:8px;height:8px;background:var(--blue);border-radius:50%;animation:bounce 1.4s infinite}
+.loading span:nth-child(2){animation-delay:.2s}
+.loading span:nth-child(3){animation-delay:.4s}
+@keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-12px)}}
+
+/* প্রিভিউ */
+.preview{
+  width:100%;height:400px;border:1px solid var(--border);border-radius:14px;
+  background:#fff;margin:12px 0
+}
+
+/* স্ক্রলবার */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.2);border-radius:3px}
+
+/* রেসপন্সিভ */
+@media(max-width:400px){
+  .card{margin:8px;padding:16px}
+  h1{font-size:24px}
+}
+</style>
 </head>
 <body>
-  <svg class="ambient-3d tl" width="200" height="200" viewBox="0 0 200 200"><defs><linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#0a84ff;stop-opacity:1" /><stop offset="100%" style="stop-color:#5e5ce6;stop-opacity:1" /></linearGradient></defs><path d="M100,10 L190,100 L100,190 L10,100 Z" fill="url(#grad1)" /></svg>
-  <svg class="ambient-3d br" width="250" height="250" viewBox="0 0 200 200"><circle cx="100" cy="100" r="80" fill="none" stroke="#ff453a" stroke-width="2" opacity="0.5"/><circle cx="100" cy="100" r="50" fill="none" stroke="#32d74b" stroke-width="1" opacity="0.5"/><circle cx="100" cy="100" r="30" fill="none" stroke="#bf5af2" stroke-width="1" opacity="0.5"/></svg>
-  <svg class="ambient-3d center" width="400" height="400" viewBox="0 0 200 200"><path d="M100,10 L190,100 L100,190 L10,100 Z" fill="none" stroke="#0a84ff" stroke-width="1"/><path d="M100,30 L170,100 L100,170 L30,100 Z" fill="none" stroke="#5e5ce6" stroke-width="1"/><path d="M100,50 L150,100 L100,150 L50,100 Z" fill="none" stroke="#bf5af2" stroke-width="1"/></svg>
-
-  <nav class="nav-bar">
-    <div class="logo">
-      <div class="logo-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg></div>
-      SJEMAR <span style="color: var(--accent)">AI</span>
-    </div>
-    <div class="nav-links">
-      <a href="/" class="${req.path === '/' ? 'active' : ''}">Home</a>
-      <a href="/create" class="${req.path === '/create' ? 'active' : ''}">AI Maker</a>
-      <a href="/posts" class="${req.path === '/posts' ? 'active' : ''}">Posts</a>
-      <a href="/dashboard" class="${req.path === '/dashboard' ? 'active' : ''}">Vault</a>
-      <a href="/admin" class="${req.path === '/admin' ? 'active' : ''}">Admin</a>
-    </div>
-    <div id="user-profile-nav" style="display:${user ? 'flex' : 'none'}; align-items:center; gap:12px;">
-      <img class="profile-pic" src="${user ? user.photoURL : ''}" alt="Profile">
-      <span style="font-weight:600; font-size:14px;">${user ? escapeHTML(user.username) : ''}</span>
-      <button class="btn btn-glass" style="padding:8px 12px; font-size:12px;" onclick="logoutUser()">Logout</button>
-    </div>
-  </nav>
-
-  <div class="container">
-    ${ann ? `<div class="announce">✨ ${escapeHTML(ann)}</div>` : ""}
-    ${content}
+<div class="bg"></div>
+<nav class="nav">
+  <div class="logo">SJEMAR</div>
+  <div class="menu">
+    <a href="/" class="${title.includes('Home')?'active':''}">🏠</a>
+    <a href="/create" class="${title.includes('AI')?'active':''}">🤖 AI</a>
+    <a href="/dashboard" class="${title.includes('Vault')?'active':''}">📦</a>
+    <a href="/posts" class="${title.includes('Posts')?'active':''}">📰</a>
+    <a href="/admin">⚙️</a>
   </div>
-
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-  <script>
-    const firebaseConfig = {
-      apiKey: "AIzaSyBTNUdaOHUrdFluaJAt2RQi6kZ5SjhVS8s", authDomain: "sifatby-38886.firebaseapp.com",
-      databaseURL: "https://sifatby-38886-default-rtdb.firebaseio.com", projectId: "sifatby-38886",
-      storageBucket: "sifatby-38886.firebasestorage.app", messagingSenderId: "571558461802",
-      appId: "1:571558461802:web:34dc103c19aa3ed4b5a513", measurementId: "G-BJ04Q1WZ8Y"
-    };
-    firebase.initializeApp(firebaseConfig);
-    const auth = firebase.auth();
-
-    auth.onAuthStateChanged(async (user) => {
-      if (user) {
-        const token = await user.getIdToken();
-        fetch('/api/auth/firebase-login', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uid: user.uid, email: user.email, displayName: user.displayName || user.email.split('@')[0], photoURL: user.photoURL || 'https://ui-avatars.com/api/?background=0a84ff&color=fff&name=' + encodeURIComponent(user.displayName || user.email), token: token })
-        }).then(r => r.json()).then(data => { if(data.ok && window.location.pathname === '/create') location.reload(); });
-      }
-    });
-    window.firebaseAuth = auth;
-    window.logoutUser = () => { auth.signOut().then(() => { fetch('/api/auth/logout', {method:'POST'}).then(() => location.reload()); }); };
-  </script>
-  ${script}
+  ${user ? `<span style="font-size:14px">👤 ${esc(user.username)}</span>` : ''}
+</nav>
+<div style="padding:12px;max-width:800px;margin:0 auto">
+  ${db.settings.announcement ? `<div class="card" style="text-align:center;padding:12px"><span style="font-size:14px">${esc(db.settings.announcement)}</span></div>` : ''}
+  ${body}
+</div>
+${extra}
+<script>
+// স্মুথ টাচ
+document.addEventListener('touchstart',()=>{},{passive:true});
+// লগআউট
+function logout(){fetch('/api/logout',{method:'POST'}).then(()=>location.reload())}
+</script>
 </body>
 </html>`;
 }
 
-/* =========================================================
-   OPENROUTER AI API INTEGRATION
-========================================================= */
-
-function callOpenRouterAI(prompt) {
-  return new Promise((resolve, reject) => {
-    const systemPrompt = `You are SJEMAR AI, an expert web developer. Generate complete, production-ready HTML code with embedded CSS and JavaScript. 
-Rules:
-- Return ONLY the HTML code (no markdown, no explanations)
-- Start with <!DOCTYPE html>
-- Include all CSS in <style> tags
-- Include all JS in <script> tags  
-- Make it beautiful, modern, responsive
-- Use dark theme by default
-- Include proper meta tags and title
-The user's request: ${prompt}`;
-
-    const postData = JSON.stringify({
-      model: AI_MODEL,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0.7,
-      max_tokens: 4000
-    });
-
-    const options = {
-      hostname: "openrouter.ai",
-      port: 443,
-      path: "/api/v1/chat/completions",
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://sjemar.app",
-        "X-Title": "SJEMAR OLED AI"
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = "";
-      res.on("data", (chunk) => { data += chunk; });
-      res.on("end", () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.choices && parsed.choices[0]) {
-            let html = parsed.choices[0].message.content;
-            // Clean up markdown code blocks if present
-            html = html.replace(/```html\s*/g, "").replace(/```\s*/g, "").trim();
-            resolve(html);
-          } else {
-            reject(new Error(parsed.error?.message || "AI response error"));
-          }
-        } catch (e) { reject(e); }
-      });
-    });
-    req.on("error", reject);
-    req.write(postData);
-    req.end();
-  });
+// ইউজার হেল্পার
+function getUser(req) {
+  // সরলীকৃত - সেশন থেকে
+  return req?.user || null;
 }
 
-/* =========================================================
-   ROUTES
-========================================================= */
+// ==================== ROUTES ====================
 
+// হোম পেজ
 app.get("/", (req, res) => {
-  const db = getDB();
-  res.send(page("Home", `
-    <h1>🤖 Next-Gen AI Website Builder</h1>
-    <p style="margin-bottom:30px; font-size: 18px;">Describe your dream website. Our AI will build it in seconds.</p>
-    <div class="glass ai-glow" style="text-align:center;">
-      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="url(#aiGrad)" stroke-width="1.5" style="margin-bottom:20px;">
-        <defs><linearGradient id="aiGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#bf5af2"/><stop offset="100%" style="stop-color:#0a84ff"/></linearGradient></defs>
-        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-      </svg>
-      <h2 style="background:linear-gradient(135deg,#bf5af2,#0a84ff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;">Free AI Generator</h2>
-      <p style="margin-bottom:24px;">Powered by DeepSeek AI via OpenRouter. 100% Free for all users.</p>
-      <a href="/create" class="btn btn-ai" style="font-size:18px;">✨ Generate Website Now</a>
+  res.send(page("Home - SJEMAR OLED", `
+    <h1>🤖 AI Website Builder</h1>
+    <p>Describe your website, AI will build it instantly. 100% Free!</p>
+    <div class="grid">
+      <div class="card">
+        <span class="badge">FREE</span>
+        <h3>AI Generator</h3>
+        <p>Create websites with AI</p>
+        <a href="/create" class="btn">✨ Start Now</a>
+      </div>
+      <div class="card">
+        <span class="badge">VIP</span>
+        <h3>899987 Badge</h3>
+        <p>Special VIP system</p>
+        <a href="/create" class="btn secondary">Learn More</a>
+      </div>
+      <div class="card">
+        <span class="badge">PRO</span>
+        <h3>Hosting</h3>
+        <p>Publish your sites</p>
+        <a href="/dashboard" class="btn secondary">View Vault</a>
+      </div>
     </div>
-    <div class="grid grid-3" style="margin-top:30px;">
-      ${(db.resources || []).map(r => `
-        <div class="glass" style="text-align:center; transition:transform 0.3s;" onmouseover="this.style.transform='translateY(-5px)'" onmouseout="this.style.transform='translateY(0)'">
-          <span class="badge ${r.ribbon === 'FREE' ? '' : ''}">${escapeHTML(r.ribbon)}</span>
-          <h3 style="margin-top:16px;">${escapeHTML(r.title)}</h3>
-          <p>${escapeHTML(r.badge)}</p>
-          <a href="/${encodeURIComponent(r.slug)}" class="btn btn-primary" style="margin-top:20px; width:100%;">EXPLORE</a>
-        </div>
-      `).join("")}
-    </div>
-  `, "", req));
+  `));
 });
 
+// AI জেনারেটর পেজ
 app.get("/create", (req, res) => {
-  const user = getLoggedUser(req);
-  const authUI = user ? `
-    <div class="glass" style="text-align:center;">
-      <img src="${user.photoURL}" class="profile-pic" style="width:80px;height:80px;margin-bottom:16px;">
-      <h3>Welcome, ${escapeHTML(user.username)}</h3>
-      <p style="margin-bottom:20px;">You are authenticated. Ready to create amazing websites with AI.</p>
-    </div>` : `
-    <div class="glass" style="text-align:center;">
-      <h2>🔒 Authentication Required</h2>
-      <p style="margin-bottom:24px;">Login via Firebase (100% Free) to use AI Generator.</p>
-      <button id="googleLoginBtn" class="btn btn-primary" style="width:100%;margin-bottom:12px;">Continue with Google</button>
-      <div id="emailAuthForm" style="display:none; text-align:left; margin-top:20px;">
-        <input type="email" id="fbEmail" class="glass-input" placeholder="Email" style="margin-bottom:12px;">
-        <input type="password" id="fbPass" class="glass-input" placeholder="Password" style="margin-bottom:12px;">
-        <button id="emailLoginBtn" class="btn btn-primary" style="width:100%;">Login / Register Free</button>
+  const user = sessions.get(req.headers.cookie?.match(/token=([^;]+)/)?.[1]) || {};
+  
+  if (!user.id) {
+    // লগইন ফর্ম
+    res.send(page("Login - SJEMAR", `
+      <div class="card">
+        <h2>🔐 Login (Free)</h2>
+        <p>Sign in to use AI Generator</p>
+        <input type="text" id="username" class="input" placeholder="Username">
+        <input type="password" id="password" class="input" placeholder="Password">
+        <button class="btn" onclick="login()">Continue</button>
+        <p style="font-size:12px;text-align:center;margin-top:12px">New account auto-created</p>
       </div>
-      <p style="margin-top:16px; font-size:13px; cursor:pointer; color:var(--accent);" onclick="document.getElementById('emailAuthForm').style.display='block'">Or use Email & Password</p>
-    </div>`;
+    `, `<script>
+      async function login(){
+        const res = await fetch('/api/login',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            username:document.getElementById('username').value,
+            password:document.getElementById('password').value
+          })
+        });
+        const data = await res.json();
+        if(data.ok) location.reload();
+        else alert(data.error);
+      }
+    </script>`));
+    return;
+  }
 
-  const aiUI = user ? `
-    <div class="glass ai-glow">
+  // মূল পেজ
+  res.send(page("AI Generator - SJEMAR", `
+    <div class="card">
       <h2>🤖 AI Website Generator</h2>
-      <p style="margin-bottom:20px;">Describe your website and let AI build it for you. Examples: "portfolio site for photographer", "landing page for coffee shop", "todo app with dark theme"</p>
-      <textarea id="aiPrompt" class="glass-input" rows="4" placeholder="Describe your dream website..." style="margin-bottom:16px;"></textarea>
-      <button id="generateAiBtn" class="btn btn-ai" style="width:100%; margin-bottom:20px;">✨ Generate with AI</button>
-      <div id="aiLoading" style="display:none; text-align:center; padding:20px;">
-        <div class="typing-indicator"><span></span><span></span><span></span></div>
-        <p style="margin-top:12px;">AI is building your website...</p>
-      </div>
-      <div id="aiResult" style="display:none;">
-        <h3 style="color:var(--success); margin-bottom:12px;">✅ Website Generated!</h3>
-        <div style="display:flex; gap:10px; margin-bottom:16px;">
-          <button class="btn btn-primary" onclick="document.getElementById('htmlEditor').value = window._aiHtml; document.getElementById('htmlEditor').style.height = '500px';">📝 Load to Editor</button>
-          <button class="btn btn-glass" onclick="downloadAiHtml()">💾 Download HTML</button>
-          <button class="btn btn-glass" onclick="previewAiHtml()">👁️ Preview</button>
-        </div>
-        <textarea id="aiHtmlPreview" class="glass-input" rows="10" readonly style="font-family:monospace; font-size:12px;"></textarea>
+      <p>Describe your dream website below</p>
+      <textarea id="prompt" class="input" placeholder="e.g., A portfolio site for photographer with dark theme..."></textarea>
+      <button class="btn" onclick="generateAI()" id="genBtn">✨ Generate with AI</button>
+      <div id="loading" class="loading" style="display:none">
+        <span></span><span></span><span></span>
       </div>
     </div>
-
-    <div class="glass">
-      <h2>📝 Manual HTML Publisher</h2>
-      <form id="publishForm">
-        <div class="grid grid-2" style="margin-bottom:16px;">
-          <input type="text" name="title" class="glass-input" placeholder="Project Title *" required>
-          <input type="text" name="slug" class="glass-input" placeholder="Unique Slug *" required>
+    
+    <div id="result" style="display:none">
+      <div class="card">
+        <h3>✅ Generated Code</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">
+          <button class="btn small" onclick="loadToEditor()">📝 Edit</button>
+          <button class="btn small secondary" onclick="downloadHTML()">💾 Download</button>
+          <button class="btn small secondary" onclick="previewHTML()">👁️ Preview</button>
         </div>
-        <input type="text" name="bio" class="glass-input" placeholder="Bio / Description (optional)" style="margin-bottom:16px;">
-        <textarea name="html" id="htmlEditor" class="glass-input" rows="15" placeholder="Paste HTML here (or use AI generator above) *" required style="font-family:monospace; font-size:13px; margin-bottom:16px;"></textarea>
-        <label style="display:flex; align-items:center; gap:10px; margin-bottom:24px; cursor:pointer;">
-          <input type="checkbox" name="antiTheft" checked style="width:20px; height:20px;"> Enable Anti-Theft Protection
-        </label>
-        <button type="submit" class="btn btn-primary" style="width:100%;">🚀 Publish Website</button>
-      </form>
-      <div id="publishResult" style="display:none; margin-top:20px; padding:20px; background:rgba(50,215,75,0.1); border:1px solid rgba(50,215,75,0.3); border-radius:16px; text-align:center;">
-        <h3 style="color:var(--success);">🎉 Website Published!</h3>
-        <p style="margin:12px 0; word-break:break-all;" id="publishedUrl"></p>
-        <div style="display:flex; gap:10px; justify-content:center;">
-          <a id="siteLink" href="#" target="_blank" class="btn btn-primary">Visit Site</a>
-          <button class="btn btn-glass" onclick="copyLink()">📋 Copy Link</button>
-        </div>
+        <textarea id="aiCode" class="input" style="font-family:monospace;font-size:12px;height:300px"></textarea>
+      </div>
+      
+      <div class="card">
+        <h3>🚀 Publish Website</h3>
+        <input type="text" id="siteTitle" class="input" placeholder="Site Title *">
+        <input type="text" id="siteSlug" class="input" placeholder="Unique Slug *">
+        <button class="btn" onclick="publishSite()">Publish Now</button>
       </div>
     </div>
-  ` : '';
-
-  res.send(page("AI Website Maker", authUI + aiUI, `
-    <script>
-      const googleBtn = document.getElementById('googleLoginBtn');
-      if(googleBtn) googleBtn.onclick = () => firebaseAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
-      const emailLoginBtn = document.getElementById('emailLoginBtn');
-      if(emailLoginBtn) emailLoginBtn.onclick = async () => {
-        const email = document.getElementById('fbEmail').value, pass = document.getElementById('fbPass').value;
-        try { await firebaseAuth.signInWithEmailAndPassword(email, pass); } catch(e) { try { await firebaseAuth.createUserWithEmailAndPassword(email, pass); } catch(err) { alert(err.message); } }
-      };
-
-      const generateAiBtn = document.getElementById('generateAiBtn');
-      if(generateAiBtn) generateAiBtn.onclick = async () => {
-        const prompt = document.getElementById('aiPrompt').value.trim();
-        if(!prompt) return alert('Please describe your website');
-        document.getElementById('aiLoading').style.display = 'block';
-        document.getElementById('aiResult').style.display = 'none';
-        generateAiBtn.disabled = true;
-        try {
-          const res = await fetch('/api/ai/generate', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ prompt })
-          });
-          const data = await res.json();
-          if(data.ok) {
-            window._aiHtml = data.html;
-            document.getElementById('aiHtmlPreview').value = data.html;
-            document.getElementById('aiResult').style.display = 'block';
-          } else {
-            alert('AI Error: ' + data.error);
-          }
-        } catch(e) { alert('Error: ' + e.message); }
-        document.getElementById('aiLoading').style.display = 'none';
-        generateAiBtn.disabled = false;
-      };
-
-      window.downloadAiHtml = () => {
-        const blob = new Blob([window._aiHtml], {type: 'text/html'});
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = 'ai-website.html'; a.click();
-      };
-
-      window.previewAiHtml = () => {
-        const win = window.open();
-        win.document.write(window._aiHtml);
-        win.document.close();
-      };
-
-      window.copyLink = () => {
-        const url = document.getElementById('publishedUrl').textContent;
-        navigator.clipboard.writeText(url).then(() => alert('Link copied!'));
-      };
-
-      const form = document.getElementById('publishForm');
-      if(form) form.onsubmit = async (e) => {
-        e.preventDefault();
-        const fd = new FormData(form), data = Object.fromEntries(fd.entries()); 
-        data.antiTheft = fd.has('antiTheft');
-        const res = await fetch('/api/publish', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
-        const json = await res.json();
-        if(json.ok) { 
-          document.getElementById('siteLink').href = json.site.url; 
-          document.getElementById('publishedUrl').textContent = json.site.url;
-          document.getElementById('publishResult').style.display = 'block'; 
-          form.reset(); 
-        } else alert(json.error);
-      };
-    </script>
-  `, req));
-});
-
-// AI Generation endpoint
-app.post("/api/ai/generate", requireUser, async (req, res) => {
-  const { prompt } = req.body;
-  if (!prompt || prompt.length < 5) return res.status(400).json({ ok: false, error: "Prompt too short" });
-  
-  addLog("AI_GENERATE", `User ${req.user.username}: ${prompt.slice(0, 50)}`);
-  
-  try {
-    const html = await callOpenRouterAI(prompt);
-    if (!html || html.length < 50) throw new Error("Empty AI response");
-    res.json({ ok: true, html, model: AI_MODEL });
-  } catch (err) {
-    console.error("AI Error:", err);
-    res.status(500).json({ ok: false, error: err.message || "AI generation failed" });
-  }
-});
-
-app.post("/api/auth/firebase-login", (req, res) => {
-  const { uid, email, displayName, photoURL } = req.body;
-  if (!uid) return res.status(400).json({ ok: false, error: "UID required" });
-  const db = getDB();
-  let user = db.users.find((u) => u.firebaseUid === uid);
-  if (!user) {
-    user = { id: uid, firebaseUid: uid, username: displayName, email: email, photoURL: photoURL, role: "user", banned: false, createdAt: new Date().toISOString() };
-    db.users.push(user); saveDB(db); addLog("USER_REGISTER_FIREBASE", `User registered: ${email}`);
-  }
-  if (user.banned) return res.status(403).json({ ok: false, error: "Account suspended" });
-  const tok = genId(24);
-  userSessions.set(tok, { userId: user.id, saveMe: true, created: Date.now() });
-  res.cookie("sj_user_token", tok, { httpOnly: true, maxAge: 60 * 24 * 60 * 60 * 1000, path: "/" });
-  res.json({ ok: true, user: { id: user.id, username: user.username, photoURL: user.photoURL } });
-});
-
-app.post("/api/auth/logout", (req, res) => {
-  const tok = getCookie(req, "sj_user_token"); if (tok) userSessions.delete(tok);
-  res.clearCookie("sj_user_token", { path: "/" }); res.json({ ok: true });
-});
-
-app.post("/api/publish", requireUser, (req, res) => {
-  const { title, bio, html, antiTheft } = req.body; const db = getDB(); let slug = slugify(req.body.slug || title);
-  if (!title || !html) return res.status(400).json({ ok: false, error: "Title and HTML are required" });
-  if (db.sites.some((s) => s.slug === slug)) return res.status(409).json({ ok: false, error: "Slug taken" });
-  let fullHtml = html; if (antiTheft) fullHtml += "\n" + ANTI_THEFT_SCRIPT;
-  const site = { id: genId(), userId: req.user.id, authorName: req.user.username, title, slug, bio: bio || "", html: fullHtml, published: true, views: 0, createdAt: new Date().toISOString() };
-  db.sites.unshift(site); saveDB(db); addLog("SITE_PUBLISH", `Site published: ${title}`);
-  const proto = req.headers["x-forwarded-proto"] || req.protocol;
-  const host = req.get("host");
-  res.json({ ok: true, site: { url: `${proto}://${host}/site/${site.slug}` } });
-});
-
-app.get("/site/:slug", (req, res) => {
-  const db = getDB(); const site = db.sites.find((s) => s.slug === req.params.slug);
-  if (!site) return res.status(404).send("Not Found");
-  site.views = Number(site.views || 0) + 1; saveDB(db); res.type("html").send(site.html);
-});
-
-app.get("/dashboard", requireUser, (req, res) => {
-  const db = getDB(); const mySites = db.sites.filter((s) => s.userId === req.user.id);
-  res.send(page("My Vault", `
-    <h1>📦 My Project Vault</h1>
-    <div class="grid grid-2">
-      ${mySites.map(s => `
-        <div class="glass">
-          <h3>${escapeHTML(s.title)}</h3>
-          <p style="font-size:13px; margin:8px 0;">/${escapeHTML(s.slug)} • 👁️ ${s.views} Views</p>
-          <div style="display:flex; gap:10px; margin-top:16px;">
-            <a href="/site/${s.slug}" target="_blank" class="btn btn-primary" style="flex:1;">Visit</a>
-            <button class="btn btn-glass" style="color:var(--danger);" onclick="deleteSite('${s.id}')">🗑️</button>
-          </div>
-        </div>
-      `).join("") || '<div class="glass"><p>No sites yet. <a href="/create" style="color:var(--accent)">Create one with AI!</a></p></div>'}
-    </div>
-  `, `<script>
-    async function deleteSite(id) { if(confirm('Delete?')) { await fetch('/api/sites/'+id, {method:'DELETE'}); location.reload(); } }
-  </script>`, req));
-});
-
-app.delete("/api/sites/:id", requireUser, (req, res) => {
-  const db = getDB(); db.sites = db.sites.filter((s) => s.id !== req.params.id); saveDB(db); res.json({ ok: true });
-});
-
-app.get("/posts", (req, res) => {
-  const db = getDB();
-  res.send(page("Posts", `
-    <h1>📰 System Posts & Guides</h1>
-    <div class="grid grid-2">
-      ${db.posts.map(p => `
-        <div class="glass">
-          <span class="badge">${escapeHTML(p.folder)}</span>
-          <h3 style="margin-top:12px;">${escapeHTML(p.title)}</h3>
-          <p>${escapeHTML(p.bio || p.content.slice(0, 100))}</p>
-          <p style="margin-top:12px; font-size:12px;">❤️ ${p.likes} | 👁️ ${p.views}</p>
-        </div>
-      `).join("")}
-    </div>
-  `, "", req));
-});
-
-app.get("/admin", (req, res) => {
-  res.send(page("Admin Control", `
-    <div class="glass" style="text-align:center;" id="adminLock">
-      <h1>🔒 Admin Master Suite</h1>
-      <p style="margin-bottom:24px;">Enter Security PIN (5768) to access system controls.</p>
-      <input type="password" id="adminPin" class="glass-input" placeholder="Enter PIN" style="max-width:300px; margin:0 auto 16px; text-align:center;">
-      <button class="btn btn-primary" onclick="unlockAdmin()">🔓 Unlock System</button>
-    </div>
-    <div id="adminPanel" style="display:none;">
-      <div class="grid grid-3" style="margin-bottom:24px;">
-        <div class="glass" style="text-align:center;"><h3 id="statUsers">0</h3><p>Users</p></div>
-        <div class="glass" style="text-align:center;"><h3 id="statSites">0</h3><p>Websites</p></div>
-        <div class="glass" style="text-align:center;"><h3 id="statAi">0</h3><p>AI Generations</p></div>
-      </div>
-      <div class="glass">
-        <h2>⚙️ 5768 Edit Info & System Settings</h2>
-        <input type="text" id="setSiteName" class="glass-input" placeholder="Site Brand Name" style="margin-bottom:12px;">
-        <input type="text" id="setAnnouncement" class="glass-input" placeholder="Global Announcement" style="margin-bottom:20px;">
-        <label style="display:flex; align-items:center; gap:10px; margin-bottom:20px; cursor:pointer;">
-          <input type="checkbox" id="setMaintenance" style="width:20px; height:20px;"> ⚠️ Enable Maintenance Mode
-        </label>
-        <button class="btn btn-primary" onclick="saveSettings()">💾 Save Settings</button>
-        <a href="/api/admin/backup-download" class="btn btn-glass" style="margin-left:12px;">📥 Download Backup</a>
-      </div>
-      <div class="glass">
-        <h2>👥 User Management (899987 VIP System)</h2>
-        <div id="userList" class="grid grid-2"></div>
+    
+    <div id="editorSection" style="display:none">
+      <div class="card">
+        <h3>📝 Code Editor</h3>
+        <textarea id="htmlEditor" class="input" style="height:400px;font-family:monospace"></textarea>
+        <button class="btn" onclick="publishFromEditor()">Publish from Editor</button>
       </div>
     </div>
   `, `
-    <script>
-      async function unlockAdmin() {
-        const pin = document.getElementById('adminPin').value;
-        const res = await fetch('/api/admin/auth', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ password: pin }) });
-        if((await res.json()).ok) { document.getElementById('adminLock').style.display = 'none'; document.getElementById('adminPanel').style.display = 'block'; loadAdminData(); } else alert('Incorrect PIN');
-      }
-      async function loadAdminData() {
-        const data = await (await fetch('/api/admin/all')).json();
-        if(data.ok) {
-          const aiLogs = data.logs.filter(l => l.action === 'AI_GENERATE').length;
-          document.getElementById('statUsers').innerText = data.users.length;
-          document.getElementById('statSites').innerText = data.sites.length;
-          document.getElementById('statAi').innerText = aiLogs;
-          document.getElementById('setSiteName').value = data.settings.siteName;
-          document.getElementById('setAnnouncement').value = data.settings.announcement;
-          document.getElementById('setMaintenance').checked = data.settings.maintenanceMode;
-          document.getElementById('userList').innerHTML = data.users.map(u => \`
-            <div class="glass" style="padding:16px; display:flex; justify-content:space-between; align-items:center;">
-              <div style="display:flex; align-items:center; gap:12px;">
-                <img src="\${u.photoURL || 'https://ui-avatars.com/api/?name='+encodeURIComponent(u.username)}" class="profile-pic" style="width:40px;height:40px;">
-                <div><strong>\${u.username}</strong> \${u.id === '899987' || u.firebaseUid === '899987' ? '<span class="badge badge-vip" style="margin-left:8px;">👑 VIP 899987</span>' : ''}<p style="font-size:12px;">\${u.email || 'User'}</p></div>
-              </div>
-              <button class="btn btn-glass" style="padding:8px 12px; font-size:12px;" onclick="toggleBan('\${u.id}')">\${u.banned ? 'Unban' : 'Ban'}</button>
-            </div>\`).join('');
+  <script>
+    let aiHTML = '';
+    
+    async function generateAI(){
+      const prompt = document.getElementById('prompt').value.trim();
+      if(!prompt) return alert('Please describe your website');
+      
+      document.getElementById('loading').style.display = 'flex';
+      document.getElementById('genBtn').disabled = true;
+      
+      try{
+        const res = await fetch('/api/ai',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({prompt})
+        });
+        const data = await res.json();
+        
+        if(data.ok){
+          aiHTML = data.html;
+          document.getElementById('aiCode').value = data.html;
+          document.getElementById('result').style.display = 'block';
+          document.getElementById('result').scrollIntoView({behavior:'smooth'});
+        }else{
+          alert('AI Error: ' + data.error);
         }
+      }catch(e){
+        alert('Error: ' + e.message);
       }
-      async function saveSettings() {
-        await fetch('/api/admin/settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ siteName: document.getElementById('setSiteName').value, announcement: document.getElementById('setAnnouncement').value, maintenanceMode: document.getElementById('setMaintenance').checked }) });
-        alert('Settings Saved!');
-      }
-      async function toggleBan(id) { await fetch('/api/admin/user/' + id + '/ban', {method:'POST'}); loadAdminData(); }
-    </script>
-  `, req));
+      
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('genBtn').disabled = false;
+    }
+    
+    function loadToEditor(){
+      document.getElementById('htmlEditor').value = aiHTML;
+      document.getElementById('editorSection').style.display = 'block';
+      document.getElementById('editorSection').scrollIntoView({behavior:'smooth'});
+    }
+    
+    function downloadHTML(){
+      const blob = new Blob([aiHTML], {type:'text/html'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'ai-website.html';
+      a.click();
+    }
+    
+    function previewHTML(){
+      const win = window.open('','_blank');
+      win.document.write(aiHTML);
+      win.document.close();
+    }
+    
+    async function publishSite(){
+      const title = document.getElementById('siteTitle').value;
+      const slug = document.getElementById('siteSlug').value;
+      if(!title || !slug) return alert('Title and slug required');
+      
+      const res = await fetch('/api/publish',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({title, slug, html:aiHTML})
+      });
+      const data = await res.json();
+      if(data.ok){
+        alert('Published! URL: ' + data.url);
+        location.href = '/dashboard';
+      }else alert(data.error);
+    }
+    
+    async function publishFromEditor(){
+      const html = document.getElementById('htmlEditor').value;
+      const title = prompt('Enter site title:');
+      const slug = prompt('Enter unique slug:');
+      if(!title || !slug) return;
+      
+      const res = await fetch('/api/publish',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({title, slug, html})
+      });
+      const data = await res.json();
+      if(data.ok){
+        alert('Published! URL: ' + data.url);
+        location.href = '/dashboard';
+      }else alert(data.error);
+    }
+  </script>`));
 });
 
-app.post("/api/admin/auth", (req, res) => {
-  if (req.body.password !== ADMIN_PASS && req.body.password !== ADMIN_PIN) return res.status(401).json({ ok: false });
-  const tok = genId(24); adminSessions.set(tok, true);
-  res.cookie("sj_admin_token", tok, { httpOnly: true, path: "/" }); res.json({ ok: true });
+// ড্যাশবোর্ড
+app.get("/dashboard", (req, res) => {
+  const token = req.headers.cookie?.match(/token=([^;]+)/)?.[1];
+  const user = sessions.get(token);
+  
+  if (!user) return res.redirect('/create');
+  
+  const mySites = db.sites.filter(s => s.userId === user.id);
+  
+  res.send(page("My Vault - SJEMAR", `
+    <h1>📦 My Websites</h1>
+    <a href="/create" class="btn">+ Create New</a>
+    <div class="grid">
+      ${mySites.map(s => `
+        <div class="card">
+          <h3>${esc(s.title)}</h3>
+          <p>/${esc(s.slug)} • 👁️ ${s.views||0}</p>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <a href="/site/${s.slug}" target="_blank" class="btn small">Visit</a>
+            <button class="btn small secondary" onclick="deleteSite('${s.id}')">🗑️</button>
+          </div>
+        </div>
+      `).join('') || '<div class="card"><p>No sites yet. Create your first website!</p></div>'}
+    </div>
+  `, `
+  <script>
+    async function deleteSite(id){
+      if(!confirm('Delete?')) return;
+      await fetch('/api/sites/'+id, {method:'DELETE'});
+      location.reload();
+    }
+  </script>`));
 });
 
-app.get("/api/admin/all", requireAdmin, (req, res) => { const db = getDB(); res.json({ ok: true, users: db.users, sites: db.sites, settings: db.settings, logs: db.logs }); });
-app.post("/api/admin/settings", requireAdmin, (req, res) => { const db = getDB(); db.settings = { ...db.settings, ...req.body }; saveDB(db); res.json({ ok: true }); });
-app.post("/api/admin/user/:id/ban", requireAdmin, (req, res) => { const db = getDB(); const u = db.users.find(x=>x.id===req.params.id); if(u){ u.banned = !u.banned; saveDB(db); } res.json({ok:true}); });
-app.get("/api/admin/backup-download", requireAdmin, (req, res) => { res.setHeader("Content-Disposition", `attachment; filename="backup.json"`); res.type("json").send(JSON.stringify(getDB(), null, 2)); });
+// পোস্টস
+app.get("/posts", (req, res) => {
+  res.send(page("Posts - SJEMAR", `
+    <h1>📰 Latest Posts</h1>
+    ${db.posts.length ? db.posts.map(p => `
+      <div class="card">
+        <span class="badge">${esc(p.folder||'General')}</span>
+        <h3>${esc(p.title)}</h3>
+        <p>${esc(p.content||'').slice(0,100)}...</p>
+      </div>
+    `).join('') : '<div class="card"><p>No posts yet</p></div>'}
+  `));
+});
 
-app.use((req, res) => res.status(404).send(page("404", `<h1>404 NOT FOUND</h1><a href="/" class="btn btn-primary">RETURN HOME</a>`, "", req)));
+// অ্যাডমিন
+app.get("/admin", (req, res) => {
+  res.send(page("Admin - SJEMAR", `
+    <div class="card" id="adminLogin">
+      <h2>🔒 Admin Panel</h2>
+      <input type="password" id="adminPass" class="input" placeholder="Admin PIN (5768)">
+      <button class="btn" onclick="adminLogin()">Unlock</button>
+    </div>
+    <div id="adminPanel" style="display:none">
+      <div class="card">
+        <h2>📊 Statistics</h2>
+        <p>Users: ${db.users.length}</p>
+        <p>Websites: ${db.sites.length}</p>
+        <p>Posts: ${db.posts.length}</p>
+      </div>
+      <div class="card">
+        <h2>⚙️ Settings</h2>
+        <input type="text" id="siteName" class="input" value="${esc(db.settings.siteName)}" placeholder="Site Name">
+        <input type="text" id="announcement" class="input" value="${esc(db.settings.announcement)}" placeholder="Announcement">
+        <button class="btn" onclick="saveSettings()">Save Settings</button>
+      </div>
+      <div class="card">
+        <h2>👥 Users</h2>
+        ${db.users.map(u => `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border)">
+            <span>${esc(u.username)} ${u.id==='899987'?'<span class="badge gold">👑 VIP</span>':''}</span>
+            <button class="btn small secondary" onclick="toggleBan('${u.id}')">${u.banned?'Unban':'Ban'}</button>
+          </div>
+        `).join('') || '<p>No users</p>'}
+      </div>
+    </div>
+  `, `
+  <script>
+    async function adminLogin(){
+      const pass = document.getElementById('adminPass').value;
+      const res = await fetch('/api/admin/login',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({password:pass})
+      });
+      if((await res.json()).ok){
+        document.getElementById('adminLogin').style.display='none';
+        document.getElementById('adminPanel').style.display='block';
+      }else alert('Wrong PIN');
+    }
+    async function saveSettings(){
+      await fetch('/api/admin/settings',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          siteName:document.getElementById('siteName').value,
+          announcement:document.getElementById('announcement').value
+        })
+      });
+      alert('Saved!');
+    }
+    async function toggleBan(id){
+      await fetch('/api/admin/ban/'+id,{method:'POST'});
+      location.reload();
+    }
+  </script>`));
+});
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 SJEMAR AI Engine v3.0 Online!`);
-  console.log(`📡 Port: ${PORT} | 🛡️ Admin PIN: ${ADMIN_PIN}`);
-  console.log(`🤖 AI Model: ${AI_MODEL} (Free via OpenRouter)`);
+// সাইট ভিউ
+app.get("/site/:slug", (req, res) => {
+  const site = db.sites.find(s => s.slug === req.params.slug);
+  if (!site) return res.status(404).send("Not Found");
+  site.views = (site.views||0) + 1;
+  save();
+  res.type("html").send(site.html);
+});
+
+// ==================== APIs ====================
+
+// লগইন
+app.post("/api/login", (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.json({ ok: false, error: "Fill all fields" });
+  
+  let user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
+  
+  if (!user) {
+    user = {
+      id: genId(),
+      username: username.trim(),
+      password: crypto.createHash('sha256').update(password).digest('hex'),
+      banned: false,
+      createdAt: new Date().toISOString()
+    };
+    db.users.push(user);
+    save();
+  } else {
+    const hash = crypto.createHash('sha256').update(password).digest('hex');
+    if (user.password !== hash) return res.json({ ok: false, error: "Wrong password" });
+    if (user.banned) return res.json({ ok: false, error: "Account banned" });
+  }
+  
+  const token = genId();
+  sessions.set(token, { id: user.id, username: user.username });
+  res.setHeader('Set-Cookie', `token=${token}; Path=/; HttpOnly; Max-Age=86400`);
+  res.json({ ok: true });
+});
+
+app.post("/api/logout", (req, res) => {
+  const token = req.headers.cookie?.match(/token=([^;]+)/)?.[1];
+  if (token) sessions.delete(token);
+  res.setHeader('Set-Cookie', 'token=; Path=/; Max-Age=0');
+  res.json({ ok: true });
+});
+
+// AI জেনারেটর (সিম্পল - রিয়েল ওপেনরাউটার পরে যোগ করা যাবে)
+app.post("/api/ai", (req, res) => {
+  const { prompt } = req.body;
+  if (!prompt) return res.json({ ok: false, error: "Prompt required" });
+  
+  // সিম্পল টেমপ্লেট (পরে রিয়েল AI যোগ হবে)
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Generated Website</title>
+  <style>
+    body{font-family:sans-serif;background:#111;color:#fff;padding:40px;text-align:center}
+    .card{background:#222;border-radius:20px;padding:30px;margin:20px auto;max-width:600px}
+    h1{background:linear-gradient(135deg,#0a84ff,#bf5af2);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+    .btn{background:#0a84ff;color:#fff;padding:12px 24px;border-radius:10px;display:inline-block;margin:10px}
+  </style>
+</head>
+<body>
+  <h1>✨ AI Generated Website</h1>
+  <div class="card">
+    <p>Based on your prompt: "${esc(prompt)}"</p>
+    <p>This is a demo template. Full AI integration coming soon!</p>
+    <div class="btn">Get Started</div>
+  </div>
+</body>
+</html>`;
+  
+  res.json({ ok: true, html });
+});
+
+// পাবলিশ
+app.post("/api/publish", (req, res) => {
+  const token = req.headers.cookie?.match(/token=([^;]+)/)?.[1];
+  const user = sessions.get(token);
+  if (!user) return res.json({ ok: false, error: "Login required" });
+  
+  const { title, slug, html } = req.body;
+  if (!title || !slug || !html) return res.json({ ok: false, error: "Fill all fields" });
+  
+  if (db.sites.some(s => s.slug === slug)) {
+    return res.json({ ok: false, error: "Slug already taken" });
+  }
+  
+  db.sites.push({
+    id: genId(),
+    userId: user.id,
+    title, slug, html,
+    views: 0,
+    createdAt: new Date().toISOString()
+  });
+  save();
+  
+  res.json({ ok: true, url: `/site/${slug}` });
+});
+
+app.delete("/api/sites/:id", (req, res) => {
+  const token = req.headers.cookie?.match(/token=([^;]+)/)?.[1];
+  const user = sessions.get(token);
+  if (!user) return res.json({ ok: false });
+  
+  db.sites = db.sites.filter(s => s.id !== req.params.id || s.userId !== user.id);
+  save();
+  res.json({ ok: true });
+});
+
+// অ্যাডমিন APIs
+app.post("/api/admin/login", (req, res) => {
+  if (req.body.password === "5768" || req.body.password === "py.py.php") {
+    res.json({ ok: true });
+  } else {
+    res.json({ ok: false });
+  }
+});
+
+app.post("/api/admin/settings", (req, res) => {
+  db.settings = { ...db.settings, ...req.body };
+  save();
+  res.json({ ok: true });
+});
+
+app.post("/api/admin/ban/:id", (req, res) => {
+  const user = db.users.find(u => u.id === req.params.id);
+  if (user) {
+    user.banned = !user.banned;
+    save();
+  }
+  res.json({ ok: true });
+});
+
+// 404
+app.use((req, res) => {
+  res.status(404).send(page("404", `
+    <div class="card" style="text-align:center">
+      <h1>404</h1>
+      <p>Page not found</p>
+      <a href="/" class="btn">Go Home</a>
+    </div>
+  `));
+});
+
+// সার্ভার স্টার্ট
+app.listen(PORT, () => {
+  console.log(`✅ SJEMAR OLED v4.0 Running!`);
+  console.log(`🌐 http://localhost:${PORT}`);
+  console.log(`🔑 Admin PIN: 5768`);
 });
