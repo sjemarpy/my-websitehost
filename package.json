@@ -1,19 +1,15 @@
 {
   "name": "sjemar-platform",
   "version": "1.0.0",
-  "description": "Complete Website Hosting Platform",
+  "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js --dev"
+    "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.19.2"
   },
   "engines": {
-    "node": ">=16.0.0"
-  },
-  "keywords": ["hosting", "website", "platform"],
-  "author": "SJEMAR",
-  "license": "MIT"
+    "node": ">=18"
+  }
 }
