@@ -1,6 +1,6 @@
 {
-  "name": "sjemar-platform",
-  "version": "1.0.0",
+  "name": "sjemar-oled-ultimate",
+  "version": "6.0.0",
   "private": true,
   "main": "server.js",
   "scripts": {
