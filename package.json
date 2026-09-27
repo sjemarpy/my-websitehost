@@ -1,11 +1,19 @@
 {
-  "name": "sjemar-oled",
-  "version": "4.0.0",
+  "name": "sjemar-platform",
+  "version": "1.0.0",
+  "description": "Complete Website Hosting Platform",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js --dev"
   },
   "dependencies": {
     "express": "^4.19.2"
-  }
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": ["hosting", "website", "platform"],
+  "author": "SJEMAR",
+  "license": "MIT"
 }
